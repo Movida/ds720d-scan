@@ -8,6 +8,10 @@
 #   .\banc\vm\invite.ps1 ps       "<commandes PowerShell>"  # sortie affichée
 #   .\banc\vm\invite.ps1 etat                               # état de la VM en lecture seule
 #
+# Avec « lancer », mettre `--` avant le programme si un argument commence par
+# un tiret (`lancer -- prog -a`) : sans lui, PowerShell prendrait `-a` pour
+# une abréviation de -Action.
+#
 # Le mot de passe du compte « david » de la VM n'est écrit nulle part : David
 # l'a rangé dans le gestionnaire d'identifiants Windows de Medabot
 # (`cmdkey /generic:ds720d-vm /user:david /pass`), ce script le lit par
@@ -15,8 +19,13 @@
 # Pourquoi un mot de passe : vmrun refuse les opérations invitées sur un
 # compte qui n'en a pas (« ne prend pas en charge les mots de passe vides »).
 # Limite connue : vmrun le reçoit en argument, donc visible dans la liste
-# des processus de Medabot le temps de l'appel ; acceptable pour une VM
-# jetable sur un PC à un seul utilisateur.
+# des processus de Medabot le temps de l'appel, et dans les journaux qui
+# enregistrent les lignes de commande (audit 4688, Sysmon) s'ils sont
+# activés ; acceptable pour un mot de passe propre à cette VM jetable, qui
+# ne doit servir nulle part ailleurs. Un mot de passe contenant un guillemet
+# casserait la transmission des arguments à vmrun : l'éviter.
+#
+# Chemin de la VM fixe : celui que crée creer_vm.ps1 par défaut.
 
 param(
     [Parameter(Mandatory = $true, Position = 0)][ValidateSet('lancer', 'vers', 'depuis', 'dossier', 'ps', 'etat')][string]$Action,
@@ -49,7 +58,8 @@ function Lire-Identifiant {
     }
     try {
         $c = [Runtime.InteropServices.Marshal]::PtrToStructure($p, [type][Ds720d.Cred+CREDENTIAL])
-        $mdp = [Runtime.InteropServices.Marshal]::PtrToStringUni($c.CredentialBlob, $c.CredentialBlobSize / 2)
+        # Taille en octets, caractères UTF-16 de deux octets : division entière.
+        $mdp = [Runtime.InteropServices.Marshal]::PtrToStringUni($c.CredentialBlob, $c.CredentialBlobSize -shr 1)
         return @{ Utilisateur = $c.UserName; MotDePasse = $mdp }
     } finally { [Ds720d.Cred]::CredFree($p) }
 }
@@ -69,9 +79,14 @@ function PowerShell-Invite([string]$commandes) {
     $scriptHote = Join-Path $env:TEMP 'ds720d-invite.ps1'
     $scriptInvite = 'C:\Users\Public\ds720d-invite.ps1'
     $sortieInvite = 'C:\Users\Public\ds720d-invite.txt'
-    # « exit 0 » : le code de sortie de la dernière commande (bcdedit sans
-    # élévation par exemple) ne dit rien de ce qui a été relevé.
-    [IO.File]::WriteAllText($scriptHote, "& { $commandes } *> $sortieInvite; exit 0", (New-Object Text.UTF8Encoding($true)))
+    # Palliatif signalé : le script sort toujours par « exit 0 », car le code
+    # de sortie de la dernière commande (bcdedit sans élévation par exemple)
+    # ne dit rien de ce qui a été relevé. Pour qu'un échec ne passe pas pour
+    # un succès, le nombre d'erreurs PowerShell est écrit en dernière ligne de
+    # la sortie (*> écrit en UTF-16, d'où -Encoding Unicode à l'ajout).
+    $corps = "`$Error.Clear(); & { $commandes } *> $sortieInvite; " +
+             "`"# erreurs PowerShell dans la VM : `$(`$Error.Count)`" | Out-File -Append -Encoding Unicode $sortieInvite; exit 0"
+    [IO.File]::WriteAllText($scriptHote, $corps, (New-Object Text.UTF8Encoding($true)))
     Vmrun-Invite @('copyFileFromHostToGuest', $vmx, $scriptHote, $scriptInvite)
     Vmrun-Invite @('runProgramInGuest', $vmx, 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe',
                    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptInvite)

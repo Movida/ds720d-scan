@@ -26,7 +26,11 @@ $ici = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 if (-not (Test-Path -LiteralPath $Iso -PathType Leaf)) { throw "ISO introuvable : $Iso" }
 $Iso = (Resolve-Path -LiteralPath $Iso).Path
+# Chemin absolu : [IO.File]::WriteAllLines plus bas part du répertoire courant
+# de .NET, qui n'est pas celui de PowerShell.
+$Dossier = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Dossier)
 $vmx = Join-Path $Dossier "$nom.vmx"
+# Un échec en cours de route laisse ce dossier : le supprimer avant de relancer.
 if (Test-Path -LiteralPath $Dossier) { throw "$Dossier existe déjà : rien n'est écrasé (supprimer la VM d'abord)" }
 New-Item -ItemType Directory -Path $Dossier | Out-Null
 
@@ -53,10 +57,16 @@ $lignes = @(
     # Déclaré Windows 11 64 bits : VMware règle ses défauts invisibles
     # (horloge, APIC) pour ce système.
     'guestOS = "windows11-64"'
-    # Réponse automatique (par défaut) aux messages de VMware : au premier
-    # démarrage, l'avis sur les atténuations du canal latéral (on les garde)
-    # bloquait la mise sous tension tant que personne ne cliquait OK.
+    # Palliatif signalé : réponse automatique (le choix par défaut) à TOUTES
+    # les questions de VMware. Au premier démarrage, l'avis sur les
+    # atténuations du canal latéral (on les garde) bloquait la mise sous
+    # tension tant que personne ne cliquait OK. Revers : la question « VM
+    # déplacée ou copiée ? » serait aussi tranchée seule, avec un nouvel
+    # identifiant et une nouvelle adresse MAC, donc peut-être une autre
+    # adresse IP que celle de la règle de pare-feu de KDNET ; uuid.action
+    # « keep » fixe la réponse à cette question-là (garder l'identité).
     'msg.autoAnswer = "TRUE"'
+    'uuid.action = "keep"'
 
     # Firmware UEFI, comme un PC actuel, et Secure Boot coupé dès la
     # création : sinon le noyau refuse le test-signing (accord de David du
@@ -108,26 +118,32 @@ $lignes = @(
     'ethernet0.virtualDev = "e1000e"'
     'ethernet0.addressType = "generated"'
 
-    # USB : contrôleurs EHCI (USB 2.0, celui que verra le scanner, appareil
-    # haute vitesse) et xHCI. Rien n'est connecté d'office : le scanner ne
-    # passe à la VM qu'à la sous-étape 5d, montage automatique coupé avant.
+    # USB : contrôleurs EHCI (USB 2.0) et xHCI (USB 3). Le scanner, appareil
+    # haute vitesse, a été rattaché par VMware au xHCI (journal de la VM en
+    # 5d : « virtPath:usb_xhci:5 ») ; l'EHCI reste pour les appareils qui
+    # l'exigeraient. Rien n'est connecté d'office : le scanner ne passe à la
+    # VM qu'après `mountvol /N` dans l'invité (sous-étape 5d).
     'usb.present = "TRUE"'
     'ehci.present = "TRUE"'
     'usb_xhci.present = "TRUE"'
     'usb.generic.autoconnect = "FALSE"'
 
-    # Affichage et pièces sans intérêt pour le banc : pas de son, pas de
-    # disquette, pas d'imprimante virtuelle.
-    'svga.present = "TRUE"'
+    # Pièces sans intérêt pour le banc, retirées : son, disquette, port
+    # série (KDNET le remplace), imprimante virtuelle.
     'sound.present = "FALSE"'
     'floppy0.present = "FALSE"'
     'serial0.present = "FALSE"'
     'printers.enabled = "FALSE"'
+    # Gardées : affichage ; VMCI, canal hôte-invité des VMware Tools (copie de
+    # fichiers et commandes par vmrun) ; HPET, horloge que Windows attend.
+    'svga.present = "TRUE"'
     'vmci0.present = "TRUE"'
     'hpet0.present = "TRUE"'
-    # L'heure de la VM n'est pas recalée sur Medabot par VMware : en
-    # débogage noyau, la VM reste figée sur un point d'arrêt, un recalage
-    # brutal fausserait les horodatages des traces.
+    # Pas de recalage périodique de l'heure de la VM sur Medabot par les
+    # Tools : en débogage noyau, la VM reste figée sur un point d'arrêt, et
+    # un recalage brutal fausserait les horodatages des traces. Limite : les
+    # recalages ponctuels de VMware (reprise, retour à un instantané) et la
+    # synchronisation NTP de Windows dans l'invité restent actifs.
     'tools.syncTime = "FALSE"'
 )
 # UTF-8 sans BOM, comme les .vmx de VMware.

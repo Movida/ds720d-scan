@@ -12,11 +12,15 @@ comme le PNG de l'étape 3.
 Pourquoi Joliet : ISO 9660 niveau 1 n'admet que des noms 8.3 en majuscules
 (« AUTOUNAT.XML »), que l'installateur ne reconnaîtrait pas. L'extension
 Joliet (descripteur de volume supplémentaire, noms en UCS-2 gros-boutiste)
-donne le nom long ; Windows la lit en priorité.
+donne le nom long ; Windows la lit en priorité. Pourquoi pas le niveau 2
+d'ISO 9660 (noms jusqu'à 31 caractères, « AUTOUNATTEND.XML;1 ») : il
+suffirait sans doute, la recherche de Windows ignorant la casse, mais Joliet
+est ce que produit oscdimg et le seul chemin vérifié (image montée sous
+Windows, fichier relu identique).
 Pourquoi pas une disquette FAT12 : la disquette virtuelle de VMware sous
 firmware UEFI est mal documentée, le CD est sûr.
 
-Sources : ECMA-119 (= ISO 9660), 2e édition, §6.8 (descripteurs), §9.1
+Sources : ECMA-119 (= ISO 9660), 2e édition, §6.7 et §8 (descripteurs), §9.1
 (enregistrement de répertoire), §9.4 (table des chemins) ; spécification
 Joliet (Microsoft, 1995) pour les séquences d'échappement « %/E » (UCS-2
 niveau 3).
@@ -70,9 +74,14 @@ def enregistrement(lba, taille, nom, repertoire, t):
              + b"\x00\x00"                 # unité de fichier, intervalle
              + deux_sens16(1)              # numéro de séquence du volume
              + bytes([len(nom)]) + nom)
+    # Octet de remplissage (§9.1.12) quand la longueur du nom est paire : il
+    # fait partie de l'enregistrement, donc LEN_DR (§9.1.1) le compte. Une
+    # première version l'ajoutait après coup sans le compter (relecture de 5g) ;
+    # sans conséquence avec un seul fichier, mais un second aurait été sauté.
+    if len(nom) % 2 == 0:
+        corps += b"\x00"
     rec = bytes([len(corps) + 1]) + corps
-    if len(rec) % 2:
-        rec += b"\x00"                     # octet de remplissage (§9.1.12)
+    assert rec[0] == len(rec) and len(rec) % 2 == 0
     return rec
 
 

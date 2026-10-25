@@ -103,22 +103,24 @@ out\essai_trace.exe: out\essai_trace.obj out\trace.obj
 # KMDF 1.15 : la plus ancienne version du WDK 26100, présente depuis Windows 10
 # 1507 ; nos pilotes n'ont besoin d'aucune fonction plus récente, et une version
 # basse se charge partout (WdfLdr refuse une version plus haute que celle du
-# système).
+# système). Cela ne vaut que pour KMDF : NTDDI_VERSION n'étant pas fixé, les
+# en-têtes du noyau visent la dernière version de Windows (NTDDI_WIN11_GE) ;
+# bonjour.sys n'appelle rien de récent, le pilote du scanner fixera sa cible.
+# KMDF_VERSION_MAJOR/MINOR ne sont lus par les en-têtes qu'à partir de KMDF
+# 1.25 : avec 1.15, ils ne servent qu'au message de bonjour.c.
 #
 # Options propres au noyau :
 #   /kernel    code noyau : pas d'exceptions C++, pas de RTTI, définit _KERNEL_MODE
 #   /GS        cookie de pile, vérifié par BufferOverflowFastFailK.lib (noyau)
-#   /Gy        une fonction par section, que l'éditeur de liens peut écarter
+#   /Gy        une fonction par section, pour que /OPT:REF écarte les inutiles
 #   /D_WIN64 /D_AMD64_ /DAMD64   architecture, attendue par les en-têtes km
-#   /wd4324    seul avertissement coupé : « structure remplie en raison du
-#              spécificateur d'alignement », levé par wdfrequest.h de KMDF lui-même
-#              (DECLSPEC_ALIGN voulu) ; /WX le rendrait bloquant sans rien dire de
-#              notre code
+# Aucun avertissement n'est coupé ici : le seul que lève KMDF (C4324) l'est
+# autour de #include <wdf.h> dans le source.
 WDK = C:\Program Files (x86)\Windows Kits\10
 WDKVER = 10.0.26100.0
 KMDF_MAJ = 1
 KMDF_MIN = 15
-KCFLAGS = /nologo /utf-8 /std:c17 /W4 /WX /wd4324 /Zi /Od /kernel /GS /Gy /X \
+KCFLAGS = /nologo /utf-8 /std:c17 /W4 /WX /Zi /Od /kernel /GS /Gy /X \
 	/I"$(WDK)\Include\$(WDKVER)\km\crt" /I"$(WDK)\Include\$(WDKVER)\km" \
 	/I"$(WDK)\Include\$(WDKVER)\shared" /I"$(WDK)\Include\wdf\kmdf\$(KMDF_MAJ).$(KMDF_MIN)" \
 	/D_WIN64 /D_AMD64_ /DAMD64 /DKMDF_VERSION_MAJOR=$(KMDF_MAJ) /DKMDF_VERSION_MINOR=$(KMDF_MIN) \
@@ -129,8 +131,10 @@ KCFLAGS = /nologo /utf-8 /std:c17 /W4 /WX /wd4324 /Zi /Od /kernel /GS /Gy /X \
 #                               à WdfLdr, initialise le cookie /GS, puis appelle DriverEntry
 #   /NODEFAULTLIB               aucune bibliothèque C de l'espace utilisateur
 #   /RELEASE                    somme de contrôle de l'en-tête PE, attendue d'une image noyau
+#   /OPT:REF /OPT:ICF           écarte le code inutile et fusionne les doublons, comme
+#                               le WDK ; /DEBUG les désactiverait sinon
 KLDFLAGS = /nologo /DEBUG /DRIVER /SUBSYSTEM:NATIVE,10.00 /ENTRY:FxDriverEntry /NODEFAULTLIB \
-	/MACHINE:X64 /RELEASE /LIBPATH:"$(WDK)\Lib\$(WDKVER)\km\x64" \
+	/MACHINE:X64 /RELEASE /OPT:REF /OPT:ICF /LIBPATH:"$(WDK)\Lib\$(WDKVER)\km\x64" \
 	/LIBPATH:"$(WDK)\Lib\wdf\kmdf\x64\$(KMDF_MAJ).$(KMDF_MIN)"
 # ntoskrnl.lib et hal.lib : services du noyau ; BufferOverflowFastFailK.lib : /GS ;
 # WdfDriverEntry.lib : FxDriverEntry ; WdfLdr.lib : chargement de la bibliothèque KMDF.

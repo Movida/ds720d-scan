@@ -22,9 +22,20 @@
  * WDK, « Reading and Filtering Debugging Messages »). Les traces WPP prévues
  * pour l'étape 6 remplaceront ce DbgPrint. Textes en ASCII : le débogueur
  * n'interprète pas l'UTF-8 des chaînes ANSI.
+ *
+ * Ni #pragma alloc_text(INIT/PAGE) ni PAGED_CODE() : deux fonctions de
+ * quelques lignes, rien à gagner à les rendre paginables, et une chose de
+ * moins à comprendre pour ce premier essai. Le pilote du scanner y viendra
+ * pour ses fonctions appelées à PASSIVE_LEVEL.
  */
 #include <ntddk.h>
+/* wdfrequest.h de KMDF 1.15 lève l'avertissement C4324 (structure remplie à
+ * cause d'un alignement qu'il demande lui-même) ; /WX le rendrait bloquant.
+ * Coupé pour ce seul en-tête, pas pour notre code (relecture de 5g). */
+#pragma warning(push)
+#pragma warning(disable: 4324)
 #include <wdf.h>
+#pragma warning(pop)
 
 DRIVER_INITIALIZE DriverEntry;
 EVT_WDF_DRIVER_UNLOAD BonjourDecharge;
@@ -39,8 +50,13 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     WDF_DRIVER_CONFIG config;
     NTSTATUS statut;
 
+    /* KMDF_VERSION_MAJOR/MINOR viennent du Makefile : c'est la version
+     * demandée à la compilation (celle des en-têtes et de WdfDriverEntry.lib),
+     * pas forcément celle que WdfLdr a chargée ; !wdfkd.wdfldr dans WinDbg
+     * montre la liaison réelle. %wZ n'est permis qu'à PASSIVE_LEVEL, ce qui
+     * est le cas de DriverEntry. */
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
-               "ds720d bonjour : DriverEntry, KMDF %u.%u, service %wZ\n",
+               "ds720d bonjour : DriverEntry, KMDF demande %u.%u, service %wZ\n",
                KMDF_VERSION_MAJOR, KMDF_VERSION_MINOR, RegistryPath);
 
     /* Aucun rappel EvtDriverDeviceAdd : pilote non-PnP. */
@@ -54,7 +70,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
         /* Rien n'a été alloué : il suffit de rendre l'erreur au gestionnaire
          * d'E/S, qui décharge l'image. */
         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
-                   "ds720d bonjour : WdfDriverCreate a echoue (0x%08X)\n", statut);
+                   "ds720d bonjour : WdfDriverCreate a echoue (0x%08lX)\n", (ULONG)statut);
         return statut;
     }
 

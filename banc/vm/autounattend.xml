@@ -7,8 +7,16 @@
   composant par passe.
 
   Aucun mot de passe ici : le compte local « david » est créé sans mot de
-  passe (VM jetable, réseau NAT, connexion à distance impossible sans mot de
-  passe). David en posera un lui-même s'il le souhaite.
+  passe, pour qu'aucun secret ne soit dans le dépôt. vmrun refusant les
+  opérations invitées sur un compte sans mot de passe, David en pose un
+  après l'installation et le range dans le gestionnaire d'identifiants de
+  Medabot (docs/noyau.md, 5c ; banc/vm/invite.ps1).
+
+  ATTENTION, faux disque du scanner : DiskConfiguration ci-dessous efface
+  le disque 0 (WillWipeDisk). Pendant une installation, le scanner ne doit
+  jamais être connecté à la VM : son volume FAT12 de 1 Mo pourrait être pris
+  pour le disque 0. Garde-fous : usb.generic.autoconnect = FALSE dans le
+  .vmx, et toujours répondre « hôte » à la fenêtre USB de VMware.
 -->
 <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
 
@@ -114,10 +122,12 @@
     </component>
     <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <!--
-        Intégrité de la mémoire (HVCI) coupée dans l'invité : avec elle, un
-        pilote signé en test ne se charge pas. Sans virtualisation imbriquée,
-        elle ne pourrait de toute façon pas tourner ; la clé l'écrit noir sur
-        blanc. N'affecte que la VM.
+        Intégrité de la mémoire (HVCI) coupée dans l'invité, par précaution :
+        elle durcit le contrôle des pilotes, et un pilote d'apprentissage n'a
+        pas à se battre contre elle (déduction, non vérifiée : sans
+        virtualisation imbriquée, elle ne pourrait de toute façon pas tourner
+        dans cette VM ; la clé l'écrit noir sur blanc). Prévu au plan de 5c
+        validé par David le 25/10. N'affecte que la VM.
       -->
       <RunSynchronous>
         <RunSynchronousCommand wcm:action="add">
