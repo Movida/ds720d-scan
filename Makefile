@@ -15,7 +15,15 @@
 CFLAGS = /nologo /utf-8 /std:c17 /W4 /WX /Zi /Od /MT /Fdout\vc.pdb
 LDFLAGS = /nologo /DEBUG
 
-all: out\essai_trace.exe
+all: out\essai_trace.exe out\bascule_winusb.exe
+
+out\bascule_winusb.obj: src\bascule_winusb.c
+	@if not exist out mkdir out
+	cl $(CFLAGS) /c /Fo$@ src\bascule_winusb.c
+
+# newdev.lib : DiInstallDevice ; advapi32.lib : test d'élévation du jeton.
+out\bascule_winusb.exe: out\bascule_winusb.obj
+	link $(LDFLAGS) /OUT:$@ out\bascule_winusb.obj setupapi.lib newdev.lib advapi32.lib
 
 out\trace.obj: src\trace.c src\trace.h
 	@if not exist out mkdir out
