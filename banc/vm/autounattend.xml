@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Fichier de réponse de l'installation de Windows 11 dans la VM du banc noyau
+  (docs/noyau.md, sous-étape 5c). Porté dans la VM par une ISO écrite à la main
+  (iso_unattend.py) : l'installateur le trouve seul à la racine du second CD.
+  Référence : « Unattended Windows Setup Reference » (doc Microsoft), un
+  composant par passe.
+
+  Aucun mot de passe ici : le compte local « david » est créé sans mot de
+  passe (VM jetable, réseau NAT, connexion à distance impossible sans mot de
+  passe). David en posera un lui-même s'il le souhaite.
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+
+  <!-- Passe windowsPE : l'installateur lui-même, avant la copie de Windows. -->
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <SetupUILanguage>
+        <UILanguage>fr-FR</UILanguage>
+      </SetupUILanguage>
+      <InputLocale>040c:0000040c</InputLocale>
+      <SystemLocale>fr-FR</SystemLocale>
+      <UILanguage>fr-FR</UILanguage>
+      <UserLocale>fr-FR</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <!--
+        Palliatif signalé : la VM n'a pas de TPM virtuel (VMware l'impose
+        avec le chiffrement de la VM, que vmcli ne sait pas faire) et démarre
+        sans Secure Boot (exigé coupé pour le test-signing). Les clés
+        LabConfig font sauter ces deux contrôles de l'installateur de
+        Windows 11. Sans effet sur Windows une fois installé.
+      -->
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Path>reg add HKLM\SYSTEM\Setup\LabConfig /v BypassTPMCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <Path>reg add HKLM\SYSTEM\Setup\LabConfig /v BypassSecureBootCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+      <!-- Disque NVMe vierge en GPT (firmware UEFI) : EFI, MSR, Windows. -->
+      <DiskConfiguration>
+        <Disk wcm:action="add">
+          <DiskID>0</DiskID>
+          <WillWipeDisk>true</WillWipeDisk>
+          <CreatePartitions>
+            <CreatePartition wcm:action="add">
+              <Order>1</Order>
+              <Type>EFI</Type>
+              <Size>100</Size>
+            </CreatePartition>
+            <CreatePartition wcm:action="add">
+              <Order>2</Order>
+              <Type>MSR</Type>
+              <Size>16</Size>
+            </CreatePartition>
+            <CreatePartition wcm:action="add">
+              <Order>3</Order>
+              <Type>Primary</Type>
+              <Extend>true</Extend>
+            </CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add">
+              <Order>1</Order>
+              <PartitionID>1</PartitionID>
+              <Format>FAT32</Format>
+              <Label>Systeme</Label>
+            </ModifyPartition>
+            <ModifyPartition wcm:action="add">
+              <Order>2</Order>
+              <PartitionID>2</PartitionID>
+            </ModifyPartition>
+            <ModifyPartition wcm:action="add">
+              <Order>3</Order>
+              <PartitionID>3</PartitionID>
+              <Format>NTFS</Format>
+              <Label>Windows</Label>
+              <Letter>C</Letter>
+            </ModifyPartition>
+          </ModifyPartitions>
+        </Disk>
+      </DiskConfiguration>
+      <!-- L'ISO d'évaluation ne contient qu'une image : l'index 1. -->
+      <ImageInstall>
+        <OSImage>
+          <InstallFrom>
+            <MetaData wcm:action="add">
+              <Key>/IMAGE/INDEX</Key>
+              <Value>1</Value>
+            </MetaData>
+          </InstallFrom>
+          <InstallTo>
+            <DiskID>0</DiskID>
+            <PartitionID>3</PartitionID>
+          </InstallTo>
+        </OSImage>
+      </ImageInstall>
+      <UserData>
+        <AcceptEula>true</AcceptEula>
+        <FullName>David</FullName>
+      </UserData>
+    </component>
+  </settings>
+
+  <!-- Passe specialize : premier démarrage de Windows installé. -->
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <ComputerName>DS720D-NOYAU</ComputerName>
+      <TimeZone>Romance Standard Time</TimeZone>
+    </component>
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <!--
+        Intégrité de la mémoire (HVCI) coupée dans l'invité : avec elle, un
+        pilote signé en test ne se charge pas. Sans virtualisation imbriquée,
+        elle ne pourrait de toute façon pas tourner ; la clé l'écrit noir sur
+        blanc. N'affecte que la VM.
+      -->
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Path>reg add HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity /v Enabled /t REG_DWORD /d 0 /f</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+    </component>
+  </settings>
+
+  <!-- Passe oobeSystem : premier accueil, ici entièrement sauté. -->
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>040c:0000040c</InputLocale>
+      <SystemLocale>fr-FR</SystemLocale>
+      <UILanguage>fr-FR</UILanguage>
+      <UserLocale>fr-FR</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <ProtectYourPC>3</ProtectYourPC>
+      </OOBE>
+      <UserAccounts>
+        <LocalAccounts>
+          <LocalAccount wcm:action="add">
+            <Name>david</Name>
+            <DisplayName>David</DisplayName>
+            <Group>Administrators</Group>
+            <Password>
+              <Value></Value>
+              <PlainText>true</PlainText>
+            </Password>
+          </LocalAccount>
+        </LocalAccounts>
+      </UserAccounts>
+      <AutoLogon>
+        <Enabled>true</Enabled>
+        <Username>david</Username>
+        <LogonCount>1</LogonCount>
+        <Password>
+          <Value></Value>
+          <PlainText>true</PlainText>
+        </Password>
+      </AutoLogon>
+    </component>
+  </settings>
+</unattend>
