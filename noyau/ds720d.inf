@@ -24,7 +24,7 @@ CatalogFile = ds720d.cat
 ; suite. A classement egal, Windows prend le paquet le plus recent, puis la
 ; version la plus haute : a monter a chaque nouvelle version installee, pour
 ; que la nouvelle l'emporte sur l'ancienne encore presente dans le magasin.
-DriverVer   = 10/25/2026,6.4.1.0
+DriverVer   = 10/25/2026,6.5.0.0
 ; Empeche un autre installateur de remplacer nos fichiers (doc WDK, PnpLockdown).
 PnpLockdown = 1
 
@@ -56,6 +56,21 @@ CopyFiles = Fichiers_ds720d
 
 [Fichiers_ds720d]
 ds720d.sys
+
+[Installer_ds720d.NT.HW]
+AddReg = Securite_ds720d
+
+[Securite_ds720d]
+; Qui peut ouvrir le scanner (etape 6e) : descripteur de securite en SDDL,
+; pose par le PnP sur les objets de la pile de l'appareil (doc WDK, "Setting
+; Device Object Security in the Registry"). D:P, liste protegee, sans heritage :
+;   SY  Systeme             : tout (GA)
+;   BA  Administrateurs     : tout (GA)
+;   BU  Utilisateurs locaux : lecture et ecriture (GRGW)
+; Pourquoi les Utilisateurs : l'outil tourne sans elevation, comme sous WinUSB,
+; avec le jeton filtre de l'utilisateur, ou le groupe Administrateurs ne compte
+; pas. Personne d'autre (pas Tout le monde, pas le reseau).
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;BU)"
 
 [Installer_ds720d.NT.Services]
 ; 0x00000002 : SPSVCINST_ASSOCSERVICE, ce service est le pilote de fonction

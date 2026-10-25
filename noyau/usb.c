@@ -45,6 +45,8 @@
 #pragma alloc_text(PAGE, UsbChercherInterface)
 #pragma alloc_text(PAGE, UsbChoisirConfiguration)
 #pragma alloc_text(PAGE, UsbAbandonner)
+#pragma alloc_text(PAGE, UsbBulk)
+#pragma alloc_text(PAGE, UsbDebloquer)
 #endif
 
 NTSTATUS UsbOuvrir(WDFDEVICE appareil, USB_CIBLE *u)
@@ -273,6 +275,68 @@ NTSTATUS UsbAbandonner(USB_CIBLE *u, const USB_PIPE *pipe)
     Trace(NT_SUCCESS(statut) ? TRACE_LEVEL_INFORMATION : TRACE_LEVEL_WARNING, TRACE_USB,
           "URB ABORT_PIPE, endpoint 0x%02X : statut 0x%08lX, USBD 0x%08lX", pipe->adresse, (ULONG)statut,
           (ULONG)urb->UrbHeader.Status);
+    USBD_UrbFree(u->usbd, urb);
+    return statut;
+}
+
+NTSTATUS UsbBulk(USB_CIBLE *u, const USB_PIPE *pipe, PVOID tampon, ULONG lg, ULONG *transferes, USBD_STATUS *usbd)
+{
+    PURB urb;
+    NTSTATUS statut;
+    BOOLEAN entrant = (pipe->adresse & 0x80) != 0;
+
+    PAGED_CODE();
+    *transferes = 0;
+    *usbd = USBD_STATUS_SUCCESS;
+    statut = USBD_UrbAllocate(u->usbd, &urb);
+    if (!NT_SUCCESS(statut))
+        return statut;
+    /* URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER (usb.h, struct
+     * _URB_BULK_OR_INTERRUPT_TRANSFER), champ par champ. En entrée, une
+     * réponse plus courte que lg est permise (USBD_SHORT_TRANSFER_OK) : en
+     * Bulk-Only, l'appareil peut envoyer moins que demandé et le dire par le
+     * résidu du CSW (BOT §6.7.2). La pile découpe le tampon en paquets de
+     * wMaxPacketSize (512 o en haute vitesse) ; un seul URB par phase. */
+    urb->UrbBulkOrInterruptTransfer.Hdr.Length = sizeof(struct _URB_BULK_OR_INTERRUPT_TRANSFER);
+    urb->UrbBulkOrInterruptTransfer.Hdr.Function = URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER;
+    urb->UrbBulkOrInterruptTransfer.PipeHandle = pipe->poignee;
+    urb->UrbBulkOrInterruptTransfer.TransferFlags =
+        entrant ? USBD_TRANSFER_DIRECTION_IN | USBD_SHORT_TRANSFER_OK : USBD_TRANSFER_DIRECTION_OUT;
+    urb->UrbBulkOrInterruptTransfer.TransferBufferLength = lg;
+    urb->UrbBulkOrInterruptTransfer.TransferBuffer = tampon;
+    urb->UrbBulkOrInterruptTransfer.TransferBufferMDL = NULL;
+    urb->UrbBulkOrInterruptTransfer.UrbLink = NULL;
+
+    statut = Envoyer(u, urb);
+    *usbd = urb->UrbHeader.Status;
+    /* La pile rend dans TransferBufferLength ce qui est passé, même partiel. */
+    *transferes = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
+    if (!NT_SUCCESS(statut))
+        Trace(TRACE_LEVEL_WARNING, TRACE_USB, "URB BULK, endpoint 0x%02X, %lu o demandes : statut 0x%08lX, USBD 0x%08lX, %lu o",
+              pipe->adresse, lg, (ULONG)statut, (ULONG)*usbd, *transferes);
+    USBD_UrbFree(u->usbd, urb);
+    return statut;
+}
+
+NTSTATUS UsbDebloquer(USB_CIBLE *u, const USB_PIPE *pipe)
+{
+    PURB urb;
+    NTSTATUS statut;
+
+    PAGED_CODE();
+    statut = USBD_UrbAllocate(u->usbd, &urb);
+    if (!NT_SUCCESS(statut))
+        return statut;
+    /* URB_FUNCTION_SYNC_RESET_PIPE_AND_CLEAR_STALL (usb.h, struct
+     * _URB_PIPE_REQUEST) : ce que fait USBSTOR pour Windows en 1b (trame
+     * 19241) et WinUsb_ResetPipe pour src/peripherique.c (periph_debloquer). */
+    urb->UrbPipeRequest.Hdr.Length = sizeof(struct _URB_PIPE_REQUEST);
+    urb->UrbPipeRequest.Hdr.Function = URB_FUNCTION_SYNC_RESET_PIPE_AND_CLEAR_STALL;
+    urb->UrbPipeRequest.PipeHandle = pipe->poignee;
+    statut = Envoyer(u, urb);
+    Trace(NT_SUCCESS(statut) ? TRACE_LEVEL_INFORMATION : TRACE_LEVEL_ERROR, TRACE_USB,
+          "URB SYNC_RESET_PIPE_AND_CLEAR_STALL, endpoint 0x%02X : statut 0x%08lX, USBD 0x%08lX", pipe->adresse,
+          (ULONG)statut, (ULONG)urb->UrbHeader.Status);
     USBD_UrbFree(u->usbd, urb);
     return statut;
 }

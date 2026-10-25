@@ -70,4 +70,15 @@ NTSTATUS UsbChoisirConfiguration(USB_CIBLE *u, PUSB_CONFIGURATION_DESCRIPTOR con
  * rien ne part sur le bus. Sans effet sur un pipe jamais ouvert. */
 NTSTATUS UsbAbandonner(USB_CIBLE *u, const USB_PIPE *pipe);
 
+/* Transfert bulk (USB 2.0 §5.8) de lg octets sur un pipe, dans le sens de son
+ * endpoint (bit 7 de l'adresse) ; tampon en mémoire non paginée (étape 6e).
+ * *transferes : octets effectivement passés ; *usbd : statut USBD de l'URB
+ * (USBD_STATUS_STALL_PID quand l'appareil répond par un STALL). */
+NTSTATUS UsbBulk(USB_CIBLE *u, const USB_PIPE *pipe, PVOID tampon, ULONG lg, ULONG *transferes, USBD_STATUS *usbd);
+
+/* Débloque un pipe après un STALL (URB SYNC_RESET_PIPE_AND_CLEAR_STALL) : la
+ * pile envoie CLEAR_FEATURE(ENDPOINT_HALT) à l'appareil (USB 2.0 §9.4.1) et
+ * remet à DATA0 le basculement de données côté hôte (§8.6.4). */
+NTSTATUS UsbDebloquer(USB_CIBLE *u, const USB_PIPE *pipe);
+
 #endif

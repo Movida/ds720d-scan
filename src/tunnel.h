@@ -29,7 +29,7 @@ int tunnel_signature(void);
  * 781 à 934) : sondages, dépôt de lg_depot octets (sélecteur 02 03 00),
  * sondages, lecture de lg_reponse octets de réponse s'il y en a (k = 0), puis
  * du statut (k = 1), qui doit être nul. Le dépôt doit être identique, octet
- * pour octet, à un dépôt observé (liste de tunnel.c). Renvoie 0 ou -1. */
+ * pour octet, à un dépôt observé (liste de permis.c). Renvoie 0 ou -1. */
 int tunnel_commande(const uint8_t *depot, uint32_t lg_depot, uint8_t *reponse, uint32_t lg_reponse);
 
 /* Les trois temps de tunnel_commande, séparément, pour la boucle de lecture

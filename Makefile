@@ -16,7 +16,7 @@
 CFLAGS = /nologo /utf-8 /std:c17 /W4 /WX /Zi /Od /MT /Fdout\vc.pdb
 LDFLAGS = /nologo /DEBUG
 
-all: out\essai_trace.exe out\essai_bot.exe out\essai_image.exe out\ds720d.exe out\convertir.exe out\bascule_winusb.exe
+all: out\essai_trace.exe out\essai_bot.exe out\essai_image.exe out\essai_permis.exe out\ds720d.exe out\ds720dk.exe out\essai_refus.exe out\convertir.exe out\bascule_winusb.exe
 
 # Image brute vers PGM ou PNG (étape 3f), rendue depuis l'étape 4d : ne parle pas au scanner.
 out\image.obj: src\image.c src\image.h
@@ -49,8 +49,23 @@ out\essai_bot.obj: src\essai_bot.c src\bot.h src\peripherique.h src\trace.h src\
 	@if not exist out mkdir out
 	cl $(CFLAGS) /c /Fo$@ src\essai_bot.c
 
-out\essai_bot.exe: out\essai_bot.obj out\bot.obj out\tunnel.obj out\trace.obj
-	link $(LDFLAGS) /OUT:$@ out\essai_bot.obj out\bot.obj out\tunnel.obj out\trace.obj
+out\essai_bot.exe: out\essai_bot.obj out\bot.obj out\tunnel.obj out\permis.obj out\trace.obj
+	link $(LDFLAGS) /OUT:$@ out\essai_bot.obj out\bot.obj out\tunnel.obj out\permis.obj out\trace.obj
+
+# Barrière des commandes observées (étape 6e), partagée avec le pilote noyau :
+# du C pur, compilé ici pour l'outil et dans la cible « noyau » pour le pilote.
+out\permis.obj: src\permis.c src\permis.h
+	@if not exist out mkdir out
+	cl $(CFLAGS) /c /Fo$@ src\permis.c
+
+# Essai de la barrière, sans scanner : chaque requête observée passe, chaque
+# variante est refusée.
+out\essai_permis.obj: src\essai_permis.c src\permis.h
+	@if not exist out mkdir out
+	cl $(CFLAGS) /c /Fo$@ src\essai_permis.c
+
+out\essai_permis.exe: out\essai_permis.obj out\permis.obj
+	link $(LDFLAGS) /OUT:$@ out\essai_permis.obj out\permis.obj
 
 out\bascule_winusb.obj: src\bascule_winusb.c
 	@if not exist out mkdir out
@@ -76,14 +91,34 @@ out\ds720d.obj: src\ds720d.c src\bot.h src\peripherique.h src\trace.h src\tunnel
 	@if not exist out mkdir out
 	cl $(CFLAGS) /c /Fo$@ src\ds720d.c
 
-out\tunnel.obj: src\tunnel.c src\tunnel.h src\bot.h
+out\tunnel.obj: src\tunnel.c src\tunnel.h src\bot.h src\permis.h
 	@if not exist out mkdir out
 	cl $(CFLAGS) /c /Fo$@ src\tunnel.c
 
 # winusb.lib : fonctions WinUsb_* ; setupapi.lib : recherche du scanner (SetupDi*) ;
 # cfgmgr32.lib : état réel de l'appareil (CM_Get_DevNode_Status). Toutes viennent du Windows SDK.
-out\ds720d.exe: out\ds720d.obj out\bot.obj out\tunnel.obj out\peripherique.obj out\trace.obj
-	link $(LDFLAGS) /OUT:$@ out\ds720d.obj out\bot.obj out\tunnel.obj out\peripherique.obj out\trace.obj winusb.lib setupapi.lib cfgmgr32.lib
+out\ds720d.exe: out\ds720d.obj out\bot.obj out\tunnel.obj out\permis.obj out\peripherique.obj out\trace.obj
+	link $(LDFLAGS) /OUT:$@ out\ds720d.obj out\bot.obj out\tunnel.obj out\permis.obj out\peripherique.obj out\trace.obj winusb.lib setupapi.lib cfgmgr32.lib
+
+# ds720dk.exe (étape 6e) : le même programme que ds720d.exe, mais qui parle au
+# scanner par notre pilote noyau (client_noyau.c, deux IOCTL) au lieu de
+# WinUSB (peripherique.c) et du Bulk-Only en espace utilisateur (bot.c).
+# setupapi.lib : recherche de l'interface du pilote.
+out\client_noyau.obj: src\client_noyau.c src\bot.h src\peripherique.h src\trace.h noyau\ds720d_ioctl.h
+	@if not exist out mkdir out
+	cl $(CFLAGS) /c /Fo$@ src\client_noyau.c
+
+out\ds720dk.exe: out\ds720d.obj out\tunnel.obj out\permis.obj out\client_noyau.obj out\trace.obj
+	link $(LDFLAGS) /OUT:$@ out\ds720d.obj out\tunnel.obj out\permis.obj out\client_noyau.obj out\trace.obj setupapi.lib
+
+# Essai de la barrière sur le vrai pilote (6e), dans la VM : deux requêtes
+# inoffensives absentes de la liste, qui doivent être refusées.
+out\essai_refus.obj: src\essai_refus.c src\bot.h src\peripherique.h src\trace.h
+	@if not exist out mkdir out
+	cl $(CFLAGS) /c /Fo$@ src\essai_refus.c
+
+out\essai_refus.exe: out\essai_refus.obj out\client_noyau.obj out\trace.obj
+	link $(LDFLAGS) /OUT:$@ out\essai_refus.obj out\client_noyau.obj out\trace.obj setupapi.lib
 
 out\essai_trace.obj: src\essai_trace.c src\trace.h
 	@if not exist out mkdir out
@@ -185,11 +220,14 @@ WPPFLAGS = -km -I"$(WDK)\bin\$(WDKVER)\WppConfig\Rev1" -scan:noyau\wpp.h -p:ds72
 #
 # Sources du pilote, une couche par fichier (docs/pilote.md, « Couches ») :
 #   ds720d.c  PnP, alimentation, démarrage du scanner
-#   usb.c     URB : contrôle, configuration, abandon des pipes (6d)
-#   bot.c     transport Bulk-Only (6d : GET_MAX_LUN)
+#   usb.c     URB : contrôle, configuration, abandon des pipes (6d), bulk et déblocage (6e)
+#   bot.c     transport Bulk-Only (6d : GET_MAX_LUN ; 6e : CBW, CSW, Reset Recovery)
+#   ioctl.c   interface et requêtes de l'outil (6e)
+#   ..\src\permis.c  la barrière des commandes observées, partagée avec l'outil,
+#             compilée ici avec les options du noyau ; sans trace WPP
 # Chacun a son .tmh, généré par une règle à lui : nmake lancerait sinon
-# tracewpp une fois par cible d'une règle commune.
-KOBJS = out\noyau\ds720d.obj out\noyau\usb.obj out\noyau\bot.obj
+# tracewpp une fois par cible d'une règle commune. /Isrc pour permis.h.
+KOBJS = out\noyau\ds720d.obj out\noyau\usb.obj out\noyau\bot.obj out\noyau\ioctl.obj out\noyau\permis.obj
 
 out\noyau\ds720d.tmh: noyau\ds720d.c noyau\wpp.h
 	@if not exist out\noyau mkdir out\noyau
@@ -203,7 +241,11 @@ out\noyau\bot.tmh: noyau\bot.c noyau\wpp.h
 	@if not exist out\noyau mkdir out\noyau
 	$(TRACEWPP) $(WPPFLAGS) noyau\bot.c
 
-out\noyau\ds720d.obj: noyau\ds720d.c noyau\usb.h noyau\bot.h noyau\wpp.h out\noyau\ds720d.tmh
+out\noyau\ioctl.tmh: noyau\ioctl.c noyau\wpp.h
+	@if not exist out\noyau mkdir out\noyau
+	$(TRACEWPP) $(WPPFLAGS) noyau\ioctl.c
+
+out\noyau\ds720d.obj: noyau\ds720d.c noyau\ds720d.h noyau\usb.h noyau\bot.h noyau\wpp.h out\noyau\ds720d.tmh
 	cl $(KCFLAGS) /DENABLE_WPP_RECORDER=1 /Iout\noyau /c /Fo$@ noyau\ds720d.c
 
 out\noyau\usb.obj: noyau\usb.c noyau\usb.h noyau\wpp.h out\noyau\usb.tmh
@@ -211,6 +253,13 @@ out\noyau\usb.obj: noyau\usb.c noyau\usb.h noyau\wpp.h out\noyau\usb.tmh
 
 out\noyau\bot.obj: noyau\bot.c noyau\bot.h noyau\usb.h noyau\wpp.h out\noyau\bot.tmh
 	cl $(KCFLAGS) /DENABLE_WPP_RECORDER=1 /Iout\noyau /c /Fo$@ noyau\bot.c
+
+out\noyau\ioctl.obj: noyau\ioctl.c noyau\ds720d.h noyau\ds720d_ioctl.h noyau\usb.h noyau\bot.h src\permis.h noyau\wpp.h out\noyau\ioctl.tmh
+	cl $(KCFLAGS) /DENABLE_WPP_RECORDER=1 /Iout\noyau /Isrc /c /Fo$@ noyau\ioctl.c
+
+out\noyau\permis.obj: src\permis.c src\permis.h
+	@if not exist out\noyau mkdir out\noyau
+	cl $(KCFLAGS) /c /Fo$@ src\permis.c
 
 # usbdex.lib : USBD_CreateHandle, USBD_UrbAllocate et les autres routines USBD
 # de Windows 8 et suivants (usbdlib.h) ; wpprecorder.lib : l'IFR (6c).

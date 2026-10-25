@@ -15,6 +15,10 @@
  * le numéro de série, qui ne doit pas finir dans une trace (CLAUDE.md).
  * Au retrait, abandon des pipes, sans déconfiguration (docs/pilote.md, § 2).
  *
+ * Étape 6e : interface de périphérique et requêtes de l'outil ds720dk.exe
+ * (ioctl.c), qui passent par la barrière des commandes observées
+ * (src/permis.c), puis par le transport Bulk-Only du pilote (bot.c).
+ *
  * Pourquoi un pilote PnP, alors que bonjour.sys (5f) était non-PnP : c'est le
  * gestionnaire PnP qui charge le pilote quand le scanner apparaît, appelle
  * EvtDriverDeviceAdd pour qu'on s'attache au-dessus de l'objet physique créé
@@ -53,8 +57,7 @@
 #include <wdf.h>
 #pragma warning(pop)
 
-#include "usb.h"
-#include "bot.h"
+#include "ds720d.h"
 
 /* Traces WPP : la configuration, puis l'en-tête que tracewpp génère pour ce
  * source (out\noyau\ds720d.tmh, Makefile). Il doit venir après tout ce qu'il
@@ -72,15 +75,8 @@ ULONG Ds720dEchoDebogueur;
 #define DS720D_VID 0x04F9
 #define DS720D_PID 0x60E2
 
-/* Contexte de l'objet de périphérique : ce que le pilote sait du scanner
- * qu'il tient. KMDF l'alloue avec l'objet, mis à zéro, et le libère avec lui. */
-typedef struct _DS720D_APPAREIL {
-    USB_CIBLE usb;              /* inscription auprès de la pile, configuration */
-    UCHAR interface;            /* bInterfaceNumber de l'interface Bulk-Only */
-    USB_PIPE entrant, sortant;  /* pipes bulk du transport Bulk-Only */
-    UCHAR max_lun;              /* plus haut LUN, rendu par GET_MAX_LUN */
-} DS720D_APPAREIL;
-WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DS720D_APPAREIL, Ds720dAppareil)
+/* Le contexte de l'objet de périphérique (DS720D_APPAREIL) est dans ds720d.h,
+ * partagé avec ioctl.c depuis 6e. */
 
 DRIVER_INITIALIZE DriverEntry;
 EVT_WDF_DRIVER_DEVICE_ADD Ds720dAjoutAppareil;
@@ -183,8 +179,16 @@ NTSTATUS Ds720dAjoutAppareil(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
     pnp.EvtDeviceSurpriseRemoval = Ds720dRetraitInopine;
     WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnp);
 
-    /* Pas de nom d'objet ni d'interface de périphérique à cette étape : rien
-     * ne doit encore pouvoir nous ouvrir depuis l'espace utilisateur (6e). */
+    /* Accès depuis l'espace utilisateur (6e, docs/pilote.md § 2) :
+     *   - ouverture exclusive : un seul client à la fois ; deux outils
+     *     entrelaceraient leurs commandes dans le tunnel 0xC5 ;
+     *   - FILE_DEVICE_SECURE_OPEN : la sécurité de l'appareil (posée par
+     *     l'INF) vaut aussi pour tout nom ouvert « sous » lui, du genre
+     *     \Device\…\quelquechose, que le gestionnaire d'E/S nous passerait
+     *     sinon sans contrôle. */
+    WdfDeviceInitSetExclusive(DeviceInit, TRUE);
+    WdfDeviceInitSetCharacteristics(DeviceInit, FILE_DEVICE_SECURE_OPEN, TRUE);
+
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributs, DS720D_APPAREIL);
     statut = WdfDeviceCreate(&DeviceInit, &attributs, &appareil);
     if (!NT_SUCCESS(statut)) {
@@ -192,7 +196,9 @@ NTSTATUS Ds720dAjoutAppareil(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
         return statut;
     }
     Trace(TRACE_LEVEL_INFORMATION, TRACE_PNP, "objet de peripherique cree, attache au-dessus du PDO du concentrateur");
-    return STATUS_SUCCESS;
+    /* Interface de périphérique et file des requêtes de l'outil (ioctl.c). Un
+     * échec ici fait échouer l'ajout : KMDF supprime alors l'objet créé. */
+    return Ds720dCreerInterface(appareil);
 }
 
 /* Taille du tampon des descripteurs, comme d[256] dans src/ds720d.c : la
@@ -287,6 +293,9 @@ static NTSTATUS Demarrer(WDFDEVICE appareil, DS720D_APPAREIL *a, UCHAR *d)
     statut = BotLireMaxLun(&a->usb, a->interface, &a->max_lun);
     if (!NT_SUCCESS(statut))
         return statut;
+
+    /* 6. Le transport Bulk-Only est prêt à porter les commandes de l'outil (6e). */
+    BotInitialiser(&a->bot, &a->usb, a->interface, &a->entrant, &a->sortant);
 
     Trace(TRACE_LEVEL_INFORMATION, TRACE_PNP,
           "scanner pret : interface %u, Bulk-Only IN 0x%02X (%u o), OUT 0x%02X (%u o), plus haut LUN %u",

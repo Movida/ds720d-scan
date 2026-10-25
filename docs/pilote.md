@@ -171,3 +171,27 @@ Pièges :
 - `IOCTL_INTERNAL_USB_SUBMIT_URB` est dans `usbioctl.h`, pas dans `usb.h`.
 - Ne jamais suspendre la VM (bouton de VMware ou veille de Windows) pendant que le scanner lui est passé : VMware le rend à Medabot, et la reprise d'une VM attachée à KDNET a précédé une NMI.
 - Un PowerShell admin ouvert après un redémarrage de la VM part de `C:\WINDOWS\system32` : se placer d'abord dans `C:\Users\Public\ds720d`.
+
+### 6e : interface IOCTL, Bulk-Only dans le noyau, barrière, ds720dk.exe (25/10)
+
+Fichiers :
+- `src/permis.c`, `src/permis.h` : la barrière, en C pur, compilée pour l'outil et pour le pilote. Les tables de lectures et de dépôts 0xC5 sortent de `tunnel.c` sans changer un octet (474 nombres comparés à l'ancienne version) ; s'y ajoutent les 6 paquets SETUP de 1b, INQUIRY (le CDB de 1b, 36 o), la forme des CDB 0xC5 et 0xC3 (longueur du CDB égale à celle du CBW, octets réservés nuls), 0xC3 en lecture de 1 à 65 536 o. `tunnel.c` s'en sert ; le pilote aussi.
+- `src/essai_permis.c` : 115 cas hors ligne ; chaque requête observée passe, chaque variante (un octet de dépôt, un sens, une longueur, TEST UNIT READY, WRITE(10), FORMAT UNIT, WRITE BUFFER, STRING du numéro de série…) est refusée.
+- `noyau/ds720d_ioctl.h` : interface partagée : GUID de l'interface de périphérique, `IOCTL_DS720D_CONTROLE` (un paquet SETUP de 1b) et `IOCTL_DS720D_BOT` (une commande Bulk-Only), en `METHOD_BUFFERED` ; la sortie de `BOT` rend l'étape atteinte, le statut, le résidu, et les octets du CBW et du CSW.
+- `noyau/usb.c` : `UsbBulk` (`URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER`) et `UsbDebloquer` (`SYNC_RESET_PIPE_AND_CLEAR_STALL`).
+- `noyau/bot.c` : `BotCommande` (CBW octet par octet, données, CSW contrôlé selon BOT §6.3) et `BotReprise` (Reset Recovery, BOT §5.3.4), repris de `src/bot.c`.
+- `noyau/ioctl.c` : interface de périphérique, file unique séquentielle au niveau PASSIVE, barrière avant tout envoi (refus : `STATUS_ACCESS_DENIED`, rien sur le bus).
+- `noyau/ds720d.c` : ouverture exclusive, `FILE_DEVICE_SECURE_OPEN` ; INF : sécurité de l'appareil en SDDL (Système et Administrateurs tout, Utilisateurs lecture-écriture), version 6.5.
+- `src/client_noyau.c` : le transport de `ds720dk.exe` par les deux IOCTL ; `ds720dk.exe` = `ds720d.c`, `tunnel.c`, `trace.c` tels quels, liés à ce fichier au lieu de `peripherique.c` et `bot.c`.
+- `src/essai_refus.c` : deux requêtes inoffensives absentes de la liste (TEST UNIT READY, descripteur STRING 2), envoyées au vrai pilote.
+
+Vérifié dans la VM (instantané `avant-6e`, capture `6e-inquiry`), l'outil lancé sans élévation :
+1. `ds720dk descripteurs`, `lun` et `inquiry` réussis (« Brother », « DS-720D », « 0.27 », CSW statut 0).
+2. Traces de `ds720dk.exe` **identiques** à celles de `ds720d.exe` sous WinUSB en 5d (18 et 25 lignes, tags mis à part), et à la capture de notre passage (18, 21 et 25 lignes, **tags compris** : le pilote rend le CBW qu'il a réellement envoyé).
+3. `essai_refus.exe` : TEST UNIT READY et STRING 2 refusés (`ERROR_ACCESS_DENIED`) ; la capture ne montre rien après l'INQUIRY : le pilote les a arrêtés avant tout envoi.
+
+Pièges :
+- `CTL_CODE` décale le type d'appareil de 16 bits : 0x8720 en `int` déborde (C4245 sous `/W4 /WX`) ; type écrit `0x8720u`.
+- En `METHOD_BUFFERED`, entrée et sortie partagent le même tampon système : le pilote recopie l'en-tête d'entrée avant tout, et n'écrit l'en-tête de sortie qu'après le transport, pour ne pas écraser des données sortantes encore à envoyer.
+- Une requête qui finit en erreur n'est pas recopiée vers l'outil par le gestionnaire d'E/S : `IOCTL_DS720D_BOT` réussit dès que le pilote l'a traitée, l'échec du transport est dans la sortie ; seul un refus de la barrière ou une requête mal formée la fait échouer.
+- Heredoc de Git Bash et barres obliques inverses : un script Python passé par heredoc a perdu ses `\` (`\b`, `\e`) ; le `Makefile` se modifie par l'outil d'édition.
