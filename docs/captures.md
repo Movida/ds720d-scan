@@ -36,6 +36,19 @@ Register-ScheduledTask -TaskName ds720d-capture -Action $action -Principal $prin
 
 Désinstallation : `Unregister-ScheduledTask ds720d-capture -Confirm:$false; Remove-Item -Recurse C:\ProgramData\ds720d`.
 
+### Scan piloté par Claude (depuis 1e)
+
+`banc/twain_banc.py` fait scanner le pilote Brother (source TWAIN 64 bits) sans Capture Tool, avec les réglages voulus, et encadre le scan d'une capture. TWAIN ne sert que côté référence (accord de David du 25/10). David glisse seulement la feuille.
+
+```
+py banc/twain_banc.py lister
+py banc/twain_banc.py scanner --mode gris --dpi 300 --regle 0x1150=0 --regle 0x1151=0 --capture <nom>
+```
+
+- `--regle 0x1150=0 --regle 0x1151=0` coupe le recadrage et le redressement automatiques (codes TWAIN des capabilities AUTOMATICBORDERDETECTION et AUTOMATICDESKEW), faits par le PC après coup.
+- Images en BMP dans `ds720d-captures\images\` (transfert TWAIN par fichier ; le transfert natif rend un handle tronqué à 32 bits).
+- Brother Button Manager (`moon.exe`, systray) interroge le scanner toutes les 0,5 s : son trafic 0xC5 apparaît dans toutes les captures.
+
 Analyse : `banc/analyse_capture.py` (trace au [format commun](format-trace.md)), vérifié par `banc/contre_verif.py` contre tshark.
 
 Piège : Ctrl+C rend l'invite, mais USBPcapCMD continue dans un second processus, élevé. L'arrêter depuis un terminal **administrateur** (ou le Gestionnaire des tâches) avec `Get-Process USBPcapCMD | Stop-Process` ; hors admin, Windows répond « Accès refusé ». La dernière trame peut alors être tronquée.
