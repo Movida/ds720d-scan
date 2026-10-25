@@ -1,4 +1,4 @@
-# Passation (mise à jour le 25/10/2026, fin de l'étape 5)
+# Passation (mise à jour le 25/10/2026, début de l'étape 6)
 
 Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un pilote KMDF (voir [HISTORIQUE.md](../HISTORIQUE.md)). Les règles sont dans [CLAUDE.md](../CLAUDE.md).
 
@@ -78,7 +78,16 @@ Cadre légal : l'art. L122-6-1 IV du CPI autorise l'étude d'un logiciel pour l'
    - 5e. Débogage noyau KDNET depuis WinDbg sur Medabot (bcdedit dans la VM, règle de pare-feu UDP 50000).
    - 5f. Test-signing dans la VM ; `noyau/bonjour.c`, pilote KMDF non-PnP fait main, construit par nmake, signé, chargé et déchargé, messages lus dans WinDbg.
    - 5g. Relecture de fond : ISO corrigée, risques du faux disque dans la VM et modifications de Medabot consignés.
-6. Pilote KMDF : configuration, pipes bulk, URB, interface IOCTL vers un petit outil utilisateur, traces WPP.
+6. Pilote KMDF du scanner (en cours ; « go » et accords écrits de David du 25/10), plan et choix dans [pilote.md](pilote.md) : le pilote fait le transport Bulk-Only en URB faits main et tient la barrière des commandes observées, l'outil `ds720dk.exe` garde le protocole du scanner :
+   - 6a. Plan et docs du pilote.
+   - 6b. Squelette PnP, INF, catalogue, installation dans la VM, retour à WinUSB.
+   - 6c. Traces WPP et enregistreur IFR.
+   - 6d. URB du pipe de contrôle : descripteurs, configuration, GET_MAX_LUN.
+   - 6e. Interface IOCTL, Bulk-Only dans le noyau, barrière, `ds720dk.exe`, INQUIRY.
+   - 6f. Tunnel 0xC5 par le pilote.
+   - 6g. Scan par le pilote (recto, recto-verso, 600 dpi).
+   - 6h. Robustesse : Ctrl+C, débranchement, désactivation, arrêt brutal de l'outil.
+   - 6i. Relecture de fond.
 7. Outil final et retrait du logiciel Brother (feu vert de David).
 
 Accès au PC : session Remote Control sur « Medabot (claude-chrome) », dépôt dans `C:\Users\morva\claude-chrome\ds720d-scan`.
