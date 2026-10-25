@@ -1,4 +1,4 @@
-# Passation (mise à jour le 25/10/2026, fin de l'étape 2)
+# Passation (mise à jour le 25/10/2026, fin de l'étape 3)
 
 Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un pilote KMDF (voir [HISTORIQUE.md](../HISTORIQUE.md)). Les règles sont dans [CLAUDE.md](../CLAUDE.md).
 
@@ -23,6 +23,8 @@ Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un p
 | Client TWAIN de banc | `banc/twain_banc.py`, fait scanner le pilote Brother sans Capture Tool ; côté référence seulement |
 | Chaîne C | Build Tools Visual Studio 2022 (17.14), compilateur C x64 et Windows SDK 10.0.26100 ; `construire.cmd` les trouve par vswhere. WDK à installer par David avant l'étape 6 |
 | Pilote du scanner | **WinUSB** depuis l'étape 2 (classe USBDevice, nom « DS-720D »), posé par `out\bascule_winusb.exe --oui` ; F: et le logiciel Brother ne le voient plus. Retour à USBSTOR : [winusb.md](winusb.md) |
+| Programmes | `out\ds720d.exe` (`descripteurs`, `lun`, `inquiry`, `etat`, `papier`, `scan --sortie FICHIER.brut`), `out\convertir.exe` (brut vers PGM ou PNG) |
+| Câble | Faux contacts possibles pendant un scan (25/10, capture `3e-scan`) : le scanner quitte le bus. Vérifier le câble avant de soupçonner le code |
 
 ## Voie retenue
 
@@ -32,7 +34,7 @@ Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un p
 
 Pourquoi pas le SCSI pass-through sur USBSTOR (voie du 24/10) : `IOCTL_SCSI_PASS_THROUGH_DIRECT` laisse Windows construire les CBW et gérer le transport, on ne voit ni les endpoints ni les transferts bulk. Contraire à l'objectif « le plus bas possible ».
 
-Inconnue tranchée par la capture 1c : le logiciel n'écrit aucun secteur du faux disque, il emploie deux **commandes SCSI vendeur**, 0xC5 (état, réglages) et 0xC3 (lecture de l'image). Détail dans [captures.md](captures.md).
+Inconnue tranchée par la capture 1c : le logiciel n'écrit aucun secteur du faux disque, il emploie deux **commandes SCSI vendeur**, 0xC5 et 0xC3. L'étape 3 les a déchiffrées : 0xC5 est un tunnel vers les commandes de scanner de SCSI-2 (SET WINDOW, SCAN, READ…), 0xC3 lit les blocs d'image. Détail dans [protocole.md](protocole.md).
 
 Cadre légal : l'art. L122-6-1 IV du CPI autorise l'étude d'un logiciel pour l'interopérabilité.
 
@@ -52,8 +54,14 @@ Cadre légal : l'art. L122-6-1 IV du CPI autorise l'étude d'un logiciel pour l'
    - 2d. Descripteurs lus par transferts de contrôle faits main (USB 2.0 §9.4.3).
    - 2e. GET_MAX_LUN (BOT §3.2) : un seul LUN.
    - 2f. INQUIRY dans un CBW écrit octet par octet (BOT §5), CSW contrôlé (BOT §6.3).
-3. Rejouer la séquence de scan capturée (`2a-gris-300-recto-sans-bm`) : une page gris 300 dpi en image brute, puis PGM/PNG. D'abord décoder les écritures 0xC5 (piste : commandes de scanner SCSI emballées) ; celles dont l'effet reste inconnu demandent l'accord de David. Ajouter alors la récupération d'erreur Bulk-Only (BOT §5.3.4), absente de l'étape 2.
-4. Couleur et recto-verso.
+3. ✓ Premier scan depuis notre code (25/10), en rejouant `2a-gris-300-recto-sans-bm` :
+   - 3a. Tunnel 0xC5 décodé dans l'analyseur ; [protocole.md](protocole.md).
+   - 3b. Image brute reconstituée hors ligne : lignes de 3 plans de 2 592 points, rouge, vert, bleu ; le scanner scanne toujours en couleur.
+   - 3c. Lectures par le tunnel sur le scanner ; reprise sur erreur Bulk-Only (BOT §5.3.4).
+   - 3d. Commandes de lecture déposées dans le tunnel : présence du papier (0x08).
+   - 3e. Scan complet d'une page (accord écrit de David pour les trois SEND vendeur) : même suite de commandes que 2a.
+   - 3f. PGM et PNG écrits à la main (blocs deflate stockés, CRC-32 et Adler-32 faits main).
+4. Au-delà de la page gris 300 dpi, sur le même protocole : rendu (courbe de tons du pilote Brother, recadrage), recto-verso (fenêtre et READ différents dans `1e-gris-300-recto-verso`), 600 dpi (seule la résolution Y double). La couleur est déjà là. Comprendre les SEND 0x83, 0x95, 0x96 avant d'en changer une valeur.
 5. Préparation noyau (accord écrit de David) : VM avec passage USB, WinDbg, test-signing, point de restauration.
 6. Pilote KMDF : configuration, pipes bulk, URB, interface IOCTL vers un petit outil utilisateur, traces WPP.
 7. Outil final et retrait du logiciel Brother (feu vert de David).

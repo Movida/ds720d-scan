@@ -23,7 +23,7 @@ Pilote écrit à la main pour le scanner USB **Brother DS-720D** (`VID_04F9&PID_
 ## Sécurité matérielle
 
 - **Ne jamais écrire sur le faux disque du scanner** (volume FAT12 de 1 Mo, lettre F: sur Medabot) : pas de WRITE, pas de FORMAT, pas d'écriture de fichier.
-- N'envoyer aucune commande SCSI qui n'est ni observée dans une capture ni documentée dans une spec. Une commande vendeur observée mais d'effet inconnu (écritures 0xC5 notamment) ne s'envoie qu'une fois son rôle compris et avec l'accord de David.
+- N'envoyer aucune commande SCSI qui n'est ni observée dans une capture ni documentée dans une spec. Une commande vendeur observée mais d'effet inconnu (écritures 0xC5 notamment) ne s'envoie qu'une fois son rôle compris et avec l'accord de David. Accord écrit du 25/10/2026 pour les SEND vendeur 0x95, 0x96 et 0x83 avec les octets de 2a (ceux du pilote TWAIN avant chaque scan) ; toute autre valeur le redemande. `src/tunnel.c` ne laisse partir que des dépôts identiques octet pour octet à un dépôt observé.
 - Jamais de mise à jour du firmware.
 - Phase noyau : mode test-signing, point de restauration et débogage noyau (WinDbg, idéalement dans une VM Windows avec passage USB) mis en place **avec l'accord écrit de David** avant le premier chargement du pilote. Toute modification de bcdedit, Secure Boot ou de la signature des pilotes demande son accord explicite.
 - Rien installer, désinstaller, télécharger ni exécuter de binaire tiers sans l'accord écrit de David. Le mode auto de Claude Code bloque `winget install` : c'est David qui lance les installations, et tout ce qui demande les droits admin (Claude tourne sans élévation).
