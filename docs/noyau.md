@@ -159,9 +159,18 @@ Après la relecture de 5g, `bonjour.sys` a été reconstruit (pragma ci-dessus, 
 
 Instantané **`test-signing-pret`** : VM avec KDNET et test-signing, scanner sous WinUSB, prête pour l'étape 6.
 
+## Pièges du banc relevés à l'étape 6
+
+Détail dans [pilote.md](pilote.md), 6d.
+
+- **Veille de Windows dans la VM** : après 15 minutes d'inactivité sur secteur, Windows demande la veille S1 ; VMware la traite en suspendant la VM, ce qui rend le scanner à Medabot. Coupée le 25/10 par David (`powercfg /change standby-timeout-ac 0` dans la VM ; l'hibernation l'était déjà). À refaire après un retour à un instantané antérieur à `avant-6d-bis`.
+- **Ne jamais suspendre la VM** pendant que le scanner lui est passé : même effet, et la reprise d'une VM attachée à KDNET a précédé une NMI (0x80).
+- **KDNET et rafales de DbgPrint** : deux plantages 0x80 NMI_HARDWARE_FAILURE juste après des rafales de messages vers WinDbg ; aucun sur 80 cycles sans ces messages (40 sans débogueur, 40 avec). Le pilote ne recopie plus ses traces vers WinDbg que sur demande.
+- **Instantanés** : `avant-6d` s'est terminé pendant la suspension ci-dessus ; `avant-6d-bis` l'a remplacé, pris scanner hors de la VM. Un instantané « à chaud » gèle la VM un instant (0,6 s pour `avant-6d-bis` dans le journal de VMware), puis écrit la mémoire pendant que la VM tourne.
+
 ## Retour arrière
 
-- **VM** : revenir à un instantané (`windows-propre`, `avant-debug`, `debug-pret`, `avant-test-signing`, `test-signing-pret`), ou supprimer la VM ; rien ne fuit vers Medabot. Après `windows-propre`, refaire `mountvol /N` avant tout passage du scanner.
+- **VM** : revenir à un instantané (`windows-propre`, `avant-debug`, `debug-pret`, `avant-test-signing`, `test-signing-pret`, puis ceux de l'étape 6 : `avant-6b`, `avant-6c`, `avant-6d`, `avant-6d-bis`…), ou supprimer la VM ; rien ne fuit vers Medabot. Après `windows-propre`, refaire `mountvol /N` avant tout passage du scanner.
 - **Ce que l'étape 5 a changé sur Medabot**, et comment le défaire :
   - installations de 5b (VMware, WinDbg, WDK) : les désinstaller depuis les paramètres ;
   - règle de pare-feu de 5e : `Remove-NetFirewallRule -DisplayName "ds720d KDNET (VM)"` ;

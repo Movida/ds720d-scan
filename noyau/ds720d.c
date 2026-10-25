@@ -1,13 +1,19 @@
 /*
  * ds720d.sys : pilote KMDF du scanner Brother DS-720D (étape 6, docs/pilote.md).
  *
- * Étape 6b : squelette PnP, sans aucun transfert. Le pilote se lie au scanner
- * par son INF (ds720d.inf, identifiant matériel USB\VID_04F9&PID_60E2), crée
- * son objet de périphérique et annonce chaque rappel de PnP et d'alimentation
- * dans le débogueur. Il n'envoie rien au scanner : pas même la sélection de
- * configuration, qui viendra à l'étape 6d. Sans elle, l'appareil reste dans
- * l'état « adressé » d'USB 2.0 §9.1.1 : énuméré par le concentrateur, mais
- * aucun endpoint bulk n'est actif. On ne risque donc rien côté scanner.
+ * Étape 6b : squelette PnP. Le pilote se lie au scanner par son INF
+ * (ds720d.inf, identifiant matériel USB\VID_04F9&PID_60E2), crée son objet de
+ * périphérique et annonce chaque rappel de PnP et d'alimentation.
+ *
+ * Étape 6d : premiers URB, au démarrage (EvtDevicePrepareHardware), dans
+ * l'ordre où Windows les envoie pour USBSTOR en 1b (trames 19191 à 19224) :
+ * descripteurs DEVICE et CONFIGURATION, sélection de la configuration (la pile
+ * envoie SET_CONFIGURATION, qui fait passer l'appareil de l'état « adressé » à
+ * l'état « configuré » d'USB 2.0 §9.1.1 et active ses endpoints bulk), puis
+ * GET_MAX_LUN. Rien d'autre : pas encore de commande SCSI (6e). Ni les
+ * descripteurs STRING de 1b (inutiles au pilote ; l'outil les lira en 6e), ni
+ * le numéro de série, qui ne doit pas finir dans une trace (CLAUDE.md).
+ * Au retrait, abandon des pipes, sans déconfiguration (docs/pilote.md, § 2).
  *
  * Pourquoi un pilote PnP, alors que bonjour.sys (5f) était non-PnP : c'est le
  * gestionnaire PnP qui charge le pilote quand le scanner apparaît, appelle
@@ -23,7 +29,8 @@
  * Device »). EvtDriverUnload enfin, quand plus aucun appareil n'utilise le pilote.
  *
  * Messages par traces WPP depuis l'étape 6c (noyau/wpp.h) : gardés dans
- * l'enregistreur en mémoire du pilote (IFR) et recopiés vers le débogueur.
+ * l'enregistreur en mémoire du pilote (IFR), recopiés vers le débogueur sur
+ * demande seulement depuis 6d (valeur EchoDebogueur, voir DriverEntry).
  * Textes en ASCII : le débogueur n'interprète pas l'UTF-8 des chaînes ANSI.
  *
  * Code paginable : DriverEntry ne sert qu'au chargement (section INIT, rendue
@@ -46,11 +53,34 @@
 #include <wdf.h>
 #pragma warning(pop)
 
+#include "usb.h"
+#include "bot.h"
+
 /* Traces WPP : la configuration, puis l'en-tête que tracewpp génère pour ce
  * source (out\noyau\ds720d.tmh, Makefile). Il doit venir après tout ce qu'il
  * utilise et avant le premier appel de Trace. */
 #include "wpp.h"
 #include "ds720d.tmh"
+
+/* Copie des traces vers le débogueur (noyau/wpp.h) : 0 par défaut, 1 si la
+ * valeur EchoDebogueur du registre du service le demande (lue par
+ * DriverEntry). Écrite une seule fois, avant tout appareil ; lue ensuite par
+ * chaque Trace. */
+ULONG Ds720dEchoDebogueur;
+
+/* Identifiants du scanner (descripteur DEVICE, 1b trame 19194). */
+#define DS720D_VID 0x04F9
+#define DS720D_PID 0x60E2
+
+/* Contexte de l'objet de périphérique : ce que le pilote sait du scanner
+ * qu'il tient. KMDF l'alloue avec l'objet, mis à zéro, et le libère avec lui. */
+typedef struct _DS720D_APPAREIL {
+    USB_CIBLE usb;              /* inscription auprès de la pile, configuration */
+    UCHAR interface;            /* bInterfaceNumber de l'interface Bulk-Only */
+    USB_PIPE entrant, sortant;  /* pipes bulk du transport Bulk-Only */
+    UCHAR max_lun;              /* plus haut LUN, rendu par GET_MAX_LUN */
+} DS720D_APPAREIL;
+WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DS720D_APPAREIL, Ds720dAppareil)
 
 DRIVER_INITIALIZE DriverEntry;
 EVT_WDF_DRIVER_DEVICE_ADD Ds720dAjoutAppareil;
@@ -86,7 +116,11 @@ static const char *NomEtatD(WDF_POWER_DEVICE_STATE e)
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
+    DECLARE_CONST_UNICODE_STRING(nom_echo, L"EchoDebogueur");
     WDF_DRIVER_CONFIG config;
+    WDFDRIVER pilote;
+    WDFKEY cle;
+    ULONG echo = 0;
     NTSTATUS statut;
 
     /* Les traces d'abord, pour que tout ce qui suit soit enregistré. L'IFR a
@@ -102,14 +136,26 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     WDF_DRIVER_CONFIG_INIT(&config, Ds720dAjoutAppareil);
     config.EvtDriverUnload = Ds720dDecharge;
 
-    statut = WdfDriverCreate(DriverObject, RegistryPath, WDF_NO_OBJECT_ATTRIBUTES, &config, WDF_NO_HANDLE);
+    statut = WdfDriverCreate(DriverObject, RegistryPath, WDF_NO_OBJECT_ATTRIBUTES, &config, &pilote);
     if (!NT_SUCCESS(statut)) {
         /* Pas d'objet pilote KMDF, donc pas d'EvtDriverUnload : on arrête
          * les traces ici, avant que l'image ne quitte la mémoire. */
         Trace(TRACE_LEVEL_ERROR, TRACE_PILOTE, "WdfDriverCreate a echoue (0x%08lX)", (ULONG)statut);
         WPP_CLEANUP(DriverObject);
+        return statut;
     }
-    return statut;
+
+    /* Réglage facultatif, sous la clé Parameters du service (celle que l'INF
+     * crée déjà pour le vérificateur KMDF) : EchoDebogueur, REG_DWORD. Absent
+     * ou illisible, il vaut 0, la copie reste coupée. */
+    if (NT_SUCCESS(WdfDriverOpenParametersRegistryKey(pilote, KEY_READ, WDF_NO_OBJECT_ATTRIBUTES, &cle))) {
+        if (NT_SUCCESS(WdfRegistryQueryULong(cle, &nom_echo, &echo)))
+            Ds720dEchoDebogueur = echo != 0;
+        WdfRegistryClose(cle);
+    }
+    Trace(TRACE_LEVEL_INFORMATION, TRACE_PILOTE, "copie des traces vers le debogueur : %s",
+          Ds720dEchoDebogueur ? "oui" : "non");
+    return STATUS_SUCCESS;
 }
 
 /*
@@ -121,6 +167,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 NTSTATUS Ds720dAjoutAppareil(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
 {
     WDF_PNPPOWER_EVENT_CALLBACKS pnp;
+    WDF_OBJECT_ATTRIBUTES attributs;
     WDFDEVICE appareil;
     NTSTATUS statut;
 
@@ -138,7 +185,8 @@ NTSTATUS Ds720dAjoutAppareil(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
 
     /* Pas de nom d'objet ni d'interface de périphérique à cette étape : rien
      * ne doit encore pouvoir nous ouvrir depuis l'espace utilisateur (6e). */
-    statut = WdfDeviceCreate(&DeviceInit, WDF_NO_OBJECT_ATTRIBUTES, &appareil);
+    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributs, DS720D_APPAREIL);
+    statut = WdfDeviceCreate(&DeviceInit, &attributs, &appareil);
     if (!NT_SUCCESS(statut)) {
         Trace(TRACE_LEVEL_ERROR, TRACE_PNP, "WdfDeviceCreate a echoue (0x%08lX)", (ULONG)statut);
         return statut;
@@ -147,30 +195,148 @@ NTSTATUS Ds720dAjoutAppareil(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
     return STATUS_SUCCESS;
 }
 
+/* Taille du tampon des descripteurs, comme d[256] dans src/ds720d.c : la
+ * configuration du DS-720D fait 32 octets (1b trame 19199). */
+#define TAILLE_DESCRIPTEURS 256
+
+/* Paquets SETUP des deux premières lectures de descripteurs, ceux de Windows
+ * en 1b, à l'octet près (USB 2.0 §9.4.3, GET_DESCRIPTOR : bmRequestType 0x80,
+ * bRequest 0x06, wValue type et index, wIndex 0, wLength). */
+static const UCHAR SETUP_DEVICE[8] = {0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x12, 0x00};     /* trame 19191 */
+static const UCHAR SETUP_CONFIGURATION[8] = {0x80, 0x06, 0x00, 0x02, 0x00, 0x00, 0x09, 0x00}; /* trame 19195 */
+
+static USHORT Le16(const UCHAR *p) { return (USHORT)(p[0] | p[1] << 8); }
+
+/* Rend ce que Demarrer a pris ; sans effet sur ce qui n'a pas été pris, d'où
+ * son appel aussi bien après un démarrage manqué qu'au retrait. */
+static VOID Liberer(DS720D_APPAREIL *a)
+{
+    UsbAbandonner(&a->usb, &a->entrant);
+    UsbAbandonner(&a->usb, &a->sortant);
+    RtlZeroMemory(&a->entrant, sizeof a->entrant);
+    RtlZeroMemory(&a->sortant, sizeof a->sortant);
+    UsbFermer(&a->usb);
+}
+
+/*
+ * Démarrage du scanner, dans l'ordre de 1b (trames 19191 à 19224) ; d est un
+ * tampon non paginé de TAILLE_DESCRIPTEURS octets. Les contrôles des réponses
+ * sont ceux de lire_descripteurs et lire_max_lun dans src/ds720d.c.
+ */
+static NTSTATUS Demarrer(WDFDEVICE appareil, DS720D_APPAREIL *a, UCHAR *d)
+{
+    UCHAR setup[8];
+    ULONG n;
+    USHORT total;
+    PUSB_INTERFACE_DESCRIPTOR itf;
+    NTSTATUS statut;
+
+    statut = UsbOuvrir(appareil, &a->usb);
+    if (!NT_SUCCESS(statut))
+        return statut;
+
+    /* 1. DEVICE, 18 octets (USB 2.0 table 9-8) ; réponse trame 19194. On ne
+     *    va pas plus loin si ce n'est pas un DS-720D : l'INF ne nous lie qu'à
+     *    lui, mais le pilote ne parle qu'à ce qu'il a vérifié. */
+    statut = UsbControle(&a->usb, SETUP_DEVICE, d, &n);
+    if (!NT_SUCCESS(statut))
+        return statut;
+    if (n != 18 || d[0] != 18 || d[1] != USB_DEVICE_DESCRIPTOR_TYPE || Le16(d + 8) != DS720D_VID ||
+        Le16(d + 10) != DS720D_PID) {
+        Trace(TRACE_LEVEL_ERROR, TRACE_PNP, "descripteur DEVICE inattendu (%lu octets), arret", n);
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
+
+    /* 2. CONFIGURATION : les 9 octets de l'en-tête pour connaître wTotalLength
+     *    (table 9-10), puis le tout (USB 2.0 §9.4.3) ; trames 19195 et 19197.
+     *    Le second paquet ne diffère du premier que par wLength : 0x20 en 1b. */
+    statut = UsbControle(&a->usb, SETUP_CONFIGURATION, d, &n);
+    if (!NT_SUCCESS(statut))
+        return statut;
+    total = Le16(d + 2);
+    if (n != 9 || d[1] != USB_CONFIGURATION_DESCRIPTOR_TYPE || total < 9 || total > TAILLE_DESCRIPTEURS) {
+        Trace(TRACE_LEVEL_ERROR, TRACE_PNP, "en-tete CONFIGURATION inattendu (%lu octets, total %u), arret", n,
+              total);
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
+    RtlCopyMemory(setup, SETUP_CONFIGURATION, 8);
+    setup[6] = (UCHAR)total;
+    setup[7] = (UCHAR)(total >> 8);
+    statut = UsbControle(&a->usb, setup, d, &n);
+    if (!NT_SUCCESS(statut))
+        return statut;
+    if (n != total) {
+        Trace(TRACE_LEVEL_ERROR, TRACE_PNP, "CONFIGURATION complet : %lu octets au lieu de %u, arret", n, total);
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
+
+    /* 3. L'interface Mass Storage, SCSI transparent, Bulk-Only (classe 08,
+     *    sous-classe 06, protocole 50 : BOT §4.3), lue et non supposée. */
+    itf = UsbChercherInterface((PUSB_CONFIGURATION_DESCRIPTOR)d, total, 0x08, 0x06, 0x50);
+    if (!itf)
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+
+    /* 4. Sélection de la configuration : la pile envoie SET_CONFIGURATION
+     *    (trame 19214 en 1b ; USB 2.0 §9.4.7) et rend les pipes bulk. */
+    statut = UsbChoisirConfiguration(&a->usb, (PUSB_CONFIGURATION_DESCRIPTOR)d, itf, &a->entrant, &a->sortant);
+    if (!NT_SUCCESS(statut))
+        return statut;
+    a->interface = itf->bInterfaceNumber;
+
+    /* 5. GET_MAX_LUN (BOT §3.2, trame 19223). */
+    statut = BotLireMaxLun(&a->usb, a->interface, &a->max_lun);
+    if (!NT_SUCCESS(statut))
+        return statut;
+
+    Trace(TRACE_LEVEL_INFORMATION, TRACE_PNP,
+          "scanner pret : interface %u, Bulk-Only IN 0x%02X (%u o), OUT 0x%02X (%u o), plus haut LUN %u",
+          a->interface, a->entrant.adresse, a->entrant.taille_paquet, a->sortant.adresse, a->sortant.taille_paquet,
+          a->max_lun);
+    return STATUS_SUCCESS;
+}
+
 /*
  * Le matériel nous est confié. Pour une carte PCI, on y recevrait ses
  * ressources (plages d'E/S, interruption) ; un appareil USB n'en a aucune :
  * tout passe par la pile USB, en URB. La liste doit donc être vide. C'est ici
- * que l'étape 6d lira les descripteurs et choisira la configuration.
+ * que le pilote lit les descripteurs et choisit la configuration (6d).
  */
 NTSTATUS Ds720dPreparerMateriel(WDFDEVICE Device, WDFCMRESLIST ResourcesRaw, WDFCMRESLIST ResourcesTranslated)
 {
-    UNREFERENCED_PARAMETER(Device);
+    DS720D_APPAREIL *a = Ds720dAppareil(Device);
+    UCHAR *d;
+    NTSTATUS statut;
+
     UNREFERENCED_PARAMETER(ResourcesRaw);
     PAGED_CODE();
     Trace(TRACE_LEVEL_INFORMATION, TRACE_PNP, "EvtDevicePrepareHardware : %lu ressource(s) materielle(s)",
           WdfCmResourceListGetCount(ResourcesTranslated));
-    return STATUS_SUCCESS;
+
+    /* Tampon des descripteurs en mémoire non paginée : la pile USB y écrit
+     * les réponses, éventuellement par DMA. Rendu dès la fin du démarrage :
+     * la pile a recopié ce qu'il lui fallait de la configuration. */
+    d = ExAllocatePool2(POOL_FLAG_NON_PAGED, TAILLE_DESCRIPTEURS, DS720D_ETIQUETTE);
+    if (!d)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    statut = Demarrer(Device, a, d);
+    ExFreePoolWithTag(d, DS720D_ETIQUETTE);
+    if (!NT_SUCCESS(statut)) {
+        /* L'appareil ne démarre pas (code 10 dans le Gestionnaire de
+         * périphériques) : on rend tout de suite ce qui a été pris. */
+        Trace(TRACE_LEVEL_ERROR, TRACE_PNP, "demarrage manque (0x%08lX)", (ULONG)statut);
+        Liberer(a);
+    }
+    return statut;
 }
 
-/* Le matériel nous est repris (désactivation, retrait, arrêt). Rien à rendre
- * à cette étape. */
+/* Le matériel nous est repris (désactivation, retrait, arrêt) : abandon des
+ * pipes, puis désinscription de la pile USB. */
 NTSTATUS Ds720dLibererMateriel(WDFDEVICE Device, WDFCMRESLIST ResourcesTranslated)
 {
-    UNREFERENCED_PARAMETER(Device);
     UNREFERENCED_PARAMETER(ResourcesTranslated);
     PAGED_CODE();
     Trace(TRACE_LEVEL_INFORMATION, TRACE_PNP, "EvtDeviceReleaseHardware");
+    Liberer(Ds720dAppareil(Device));
     return STATUS_SUCCESS;
 }
 

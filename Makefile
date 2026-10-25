@@ -182,15 +182,40 @@ out\noyau\bonjour.sys: out\noyau\bonjour.obj
 TRACEWPP = "$(WDK)\bin\$(WDKVER)\x64\tracewpp.exe"
 WPPFLAGS = -km -I"$(WDK)\bin\$(WDKVER)\WppConfig\Rev1" -scan:noyau\wpp.h -p:ds720d -odir:out\noyau
 
+#
+# Sources du pilote, une couche par fichier (docs/pilote.md, « Couches ») :
+#   ds720d.c  PnP, alimentation, démarrage du scanner
+#   usb.c     URB : contrôle, configuration, abandon des pipes (6d)
+#   bot.c     transport Bulk-Only (6d : GET_MAX_LUN)
+# Chacun a son .tmh, généré par une règle à lui : nmake lancerait sinon
+# tracewpp une fois par cible d'une règle commune.
+KOBJS = out\noyau\ds720d.obj out\noyau\usb.obj out\noyau\bot.obj
+
 out\noyau\ds720d.tmh: noyau\ds720d.c noyau\wpp.h
 	@if not exist out\noyau mkdir out\noyau
 	$(TRACEWPP) $(WPPFLAGS) noyau\ds720d.c
 
-out\noyau\ds720d.obj: noyau\ds720d.c noyau\wpp.h out\noyau\ds720d.tmh
+out\noyau\usb.tmh: noyau\usb.c noyau\wpp.h
+	@if not exist out\noyau mkdir out\noyau
+	$(TRACEWPP) $(WPPFLAGS) noyau\usb.c
+
+out\noyau\bot.tmh: noyau\bot.c noyau\wpp.h
+	@if not exist out\noyau mkdir out\noyau
+	$(TRACEWPP) $(WPPFLAGS) noyau\bot.c
+
+out\noyau\ds720d.obj: noyau\ds720d.c noyau\usb.h noyau\bot.h noyau\wpp.h out\noyau\ds720d.tmh
 	cl $(KCFLAGS) /DENABLE_WPP_RECORDER=1 /Iout\noyau /c /Fo$@ noyau\ds720d.c
 
-out\noyau\ds720d.sys: out\noyau\ds720d.obj
-	link $(KLDFLAGS) /OUT:$@ out\noyau\ds720d.obj $(KLIBS) wpprecorder.lib
+out\noyau\usb.obj: noyau\usb.c noyau\usb.h noyau\wpp.h out\noyau\usb.tmh
+	cl $(KCFLAGS) /DENABLE_WPP_RECORDER=1 /Iout\noyau /c /Fo$@ noyau\usb.c
+
+out\noyau\bot.obj: noyau\bot.c noyau\bot.h noyau\usb.h noyau\wpp.h out\noyau\bot.tmh
+	cl $(KCFLAGS) /DENABLE_WPP_RECORDER=1 /Iout\noyau /c /Fo$@ noyau\bot.c
+
+# usbdex.lib : USBD_CreateHandle, USBD_UrbAllocate et les autres routines USBD
+# de Windows 8 et suivants (usbdlib.h) ; wpprecorder.lib : l'IFR (6c).
+out\noyau\ds720d.sys: $(KOBJS)
+	link $(KLDFLAGS) /OUT:$@ $(KOBJS) $(KLIBS) usbdex.lib wpprecorder.lib
 
 clean:
 	@if exist out rmdir /s /q out

@@ -12,6 +12,8 @@
 #   verificateur-arret   retire Driver Verifier (redémarrage ensuite)
 #   installer            accord A3 : paquet ajouté au magasin, scanner lié à ds720d
 #   cycle [N]            désactive puis réactive le scanner N fois (1 par défaut)
+#   echo 0|1             copie des traces vers WinDbg coupée (0, par défaut) ou
+#                        active (1) ; le pilote est rechargé pour la prendre en compte
 #   retour               paquet retiré, scanner rendu à WinUSB (comme à l'étape 2)
 #
 # Garde-fou : le script refuse de tourner ailleurs que sur DS720D-NOYAU. Le
@@ -30,9 +32,10 @@
 
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet('etat', 'certificat', 'verificateur', 'verificateur-arret', 'installer', 'cycle', 'retour')]
+    [ValidateSet('etat', 'certificat', 'verificateur', 'verificateur-arret', 'installer', 'cycle', 'echo', 'retour')]
     [string]$Action,
-    [Parameter(Position = 1)][ValidateRange(1, 100)][int]$Fois = 1
+    # Nombre de cycles pour « cycle », 0 ou 1 pour « echo ».
+    [Parameter(Position = 1)][string]$Valeur
 )
 
 $ErrorActionPreference = 'Stop'
@@ -103,6 +106,8 @@ switch ($Action) {
         if ($svc) {
             Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Services\ds720d\Parameters\Wdf -ErrorAction SilentlyContinue |
                 Select-Object VerifierOn, VerboseOn | Format-List | Out-String | Write-Host
+            $echo = (Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Services\ds720d\Parameters -ErrorAction SilentlyContinue).EchoDebogueur
+            Write-Host "Copie des traces vers WinDbg (EchoDebogueur) : $(if ($echo) { $echo } else { '0 (absente)' })"
         }
         # Pilotes soumis à Driver Verifier, lus dans le registre qu'écrit
         # verifier.exe (lisible sans droits admin, contrairement à /querysettings).
@@ -190,11 +195,29 @@ switch ($Action) {
         # supprimer ; réactiver le redémarre (PrepareHardware, D0Entry). Sous
         # Driver Verifier, une fuite ou une faute s'y voit vite.
         Exiger-Admin
-        for ($i = 1; $i -le $Fois; $i++) {
-            Write-Host "--- cycle $i / $Fois"
+        $fois = if ($Valeur) { [int]$Valeur } else { 1 }
+        if ($fois -lt 1 -or $fois -gt 100) { throw 'cycle N : N de 1 à 100' }
+        for ($i = 1; $i -le $fois; $i++) {
+            Write-Host "--- cycle $i / $fois"
             Pnputil @('/disable-device', '/deviceid', $ID_SCANNER)
             Pnputil @('/enable-device', '/deviceid', $ID_SCANNER)
         }
+        Montrer-Scanner
+    }
+    'echo' {
+        # Valeur EchoDebogueur de la clé Parameters du service, lue par
+        # DriverEntry (noyau/wpp.h) : 1 recopie chaque trace vers WinDbg, 0 la
+        # laisse dans l'enregistreur en mémoire seulement. Coupée par défaut :
+        # avec KDNET, des rafales de messages ont précédé deux plantages
+        # (docs/pilote.md, 6d). Désactiver puis réactiver le scanner décharge
+        # et recharge le pilote, qui relit alors la valeur.
+        Exiger-Admin
+        if ($Valeur -ne '0' -and $Valeur -ne '1') { throw 'echo 0 ou echo 1' }
+        New-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Services\ds720d\Parameters -Name EchoDebogueur `
+            -PropertyType DWord -Value ([int]$Valeur) -Force | Out-Null
+        Write-Host "EchoDebogueur = $Valeur"
+        Pnputil @('/disable-device', '/deviceid', $ID_SCANNER)
+        Pnputil @('/enable-device', '/deviceid', $ID_SCANNER)
         Montrer-Scanner
     }
     'retour' {

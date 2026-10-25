@@ -146,3 +146,28 @@ Pièges :
 - Avec `/std:c17`, `cl` emploie le préprocesseur conforme : `MSG "\n", __VA_ARGS__` garde la virgule finale quand un message n'a pas d'argument. `, ## __VA_ARGS__` la retire.
 - `tracewpp` lit un source sans BOM dans la page de code de Windows : nos accents de commentaires y sont mal lus, sans effet ; les messages restent en ASCII.
 - `!wdfkd.wdflogdump ds720d` seul ne fait que proposer `-d` ou `-f` : le journal de KMDF se demande par `-f`.
+
+### 6d : premiers URB, sur le pipe de contrôle (25/10)
+
+Fichiers :
+- `noyau/usb.c`, `noyau/usb.h` : couche URB générique. Inscription auprès de la pile (`USBD_CreateHandle`, contrat 0x602) ; URB alloués par `USBD_UrbAllocate` ; envoi par une requête KMDF préparée à la main (`WdfIoTargetFormatRequestForInternalIoctlOthers`, puis `USBD_AssignUrbToIoStackLocation` dans l'emplacement de pile suivant, envoi synchrone avec délai de 5 s). `UsbControle` remplit un `URB_FUNCTION_CONTROL_TRANSFER_EX` champ par champ avec les 8 octets SETUP de l'appelant (délai de 2 s dans l'URB) ; `UsbChercherInterface` parcourt les descripteurs comme `src/ds720d.c` ; `UsbChoisirConfiguration` envoie l'URB `SELECT_CONFIGURATION` (construit par `USBD_SelectConfigUrbAllocateAndBuild`, l'allocateur qui va avec l'inscription) et lit les poignées de pipes dans sa réponse ; `UsbAbandonner` envoie `ABORT_PIPE`.
+- `noyau/bot.c`, `noyau/bot.h` : couche Bulk-Only, pour l'instant GET_MAX_LUN (BOT §3.2).
+- `noyau/ds720d.c` : contexte de l'appareil ; au démarrage (`EvtDevicePrepareHardware`), descripteurs DEVICE et CONFIGURATION avec les paquets SETUP de 1b, contrôle des identifiants, interface 08/06/50, sélection de la configuration, GET_MAX_LUN ; au retrait, abandon des pipes et désinscription. Copie des traces vers WinDbg facultative (valeur `EchoDebogueur`, voir plus bas).
+- `noyau/installer.ps1` : action `echo 0|1`. INF en version 6.4.1.
+
+Vérifié dans la VM (instantané `avant-6d-bis`) :
+1. Démarrage (`!rcdrkd` et journal de WinDbg) : DEVICE 18 o, CONFIGURATION 9 puis 32 o, `SELECT_CONFIGURATION` réussi, pipes bulk IN 0x81 et OUT 0x02 de 512 o, GET_MAX_LUN rend 0 ; statut USBD 0 partout.
+2. Sur le bus (capture `6d-demarrage-2`, [captures.md](captures.md)) : la séquence du pilote est **identique à celle de Windows dans 1b** (trames 19191 à 19224, 16 lignes, `compare_traces.py`), aux lectures STRING et au SET_INTERFACE près, que notre pilote n'envoie pas. Le concentrateur relit de son côté DEVICE (64 puis 18 o) à chaque énumération.
+3. Endurance : 40 cycles désactiver-réactiver sans débogueur, 41 démarrages complets dans la capture, aucune faute ; Driver Verifier : aucune allocation restante au déchargement (3 au plus fort).
+4. Contre-épreuve avec la 6.4.1 (copie vers WinDbg coupée) : mise à jour depuis la 6.4, puis 40 cycles **WinDbg attaché**, aucune faute (41 chargements et déchargements notés par Driver Verifier dans le journal de WinDbg, VM jamais redémarrée).
+
+Deux plantages, et ce qu'ils ont appris :
+- Les deux sont des **0x80 NMI_HARDWARE_FAILURE** (« TDO »), processeur au repos ou dans la DPC du disque NVMe de la VM, aucune ligne de notre code sur la pile, juste après une rafale de messages recopiés vers WinDbg (KDNET).
+- Le premier, à 19:44, avait en plus une cause de banc : Windows dans la VM s'est mis en veille (S1, 15 minutes d'inactivité sur secteur) ; VMware traite cette veille en suspendant la VM, ce qui rend le scanner à Medabot, puis la VM a repris. Veille coupée ensuite (`powercfg /change standby-timeout-ac 0`, l'hibernation l'était déjà).
+- Le second, au 8e cycle, WinDbg attaché, sans veille : même NMI. Sans débogueur, 40 cycles sans faute. Hypothèse retenue (déduite, pas prouvée) : avec KDNET, chaque DbgPrint gèle les processeurs de la VM le temps de l'envoi, et une rafale finit par provoquer une NMI que Windows prend pour une panne. Décision : la copie des traces vers WinDbg est coupée par défaut (`installer.ps1 echo 1` la rétablit pour une séance) ; les traces restent toujours dans l'IFR (`!rcdrkd.rcdrlogdump ds720d`, ou `kd.exe` sur un vidage).
+- Les vidages ont été analysés par `kd.exe` (accord A4) puis effacés ; la VM a été arrêtée dans WinDbg chaque fois, puis relancée par `g` (vidage écrit, redémarrage).
+
+Pièges :
+- `IOCTL_INTERNAL_USB_SUBMIT_URB` est dans `usbioctl.h`, pas dans `usb.h`.
+- Ne jamais suspendre la VM (bouton de VMware ou veille de Windows) pendant que le scanner lui est passé : VMware le rend à Medabot, et la reprise d'une VM attachée à KDNET a précédé une NMI.
+- Un PowerShell admin ouvert après un redémarrage de la VM part de `C:\WINDOWS\system32` : se placer d'abord dans `C:\Users\Public\ds720d`.

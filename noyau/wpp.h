@@ -17,12 +17,22 @@
  *     Inflight Trace Recorder in KMDF and UMDF 2 Drivers »). Activé par
  *     ENABLE_WPP_RECORDER=1 (Makefile) et wpprecorder.lib, comme le fait le
  *     projet MSBuild du WDK (WindowsDriver.Common.targets) ;
- *   - le débogueur, en direct : WPP appelle WPP_DEBUG pour chaque message
- *     retenu (commentaire de tracemacro.tpl : « Called for each enabled event:
- *     WPP_DEBUG((MSG, arg1, arg2, arg3...)) »), ici un DbgPrintEx. C'est ce que
- *     le journal de WinDbg montrait déjà à l'étape 6b. Conséquence : les
- *     formats ne doivent employer que des conversions que DbgPrint comprend
- *     aussi (%u, %lu, %lX, %s, %p…), pas les extensions de WPP comme %!STATUS!.
+ *   - le débogueur, en direct, sur demande seulement (depuis 6d) : WPP appelle
+ *     WPP_DEBUG pour chaque message retenu (commentaire de tracemacro.tpl :
+ *     « Called for each enabled event: WPP_DEBUG((MSG, arg1, arg2, arg3...)) »),
+ *     ici un DbgPrintEx si la valeur de registre EchoDebogueur du service vaut
+ *     1 (Parameters\EchoDebogueur, lue par DriverEntry ; noyau\installer.ps1
+ *     echo 1). Conséquence : les formats ne doivent employer que des
+ *     conversions que DbgPrint comprend aussi (%u, %lu, %lX, %s, %p…), pas les
+ *     extensions de WPP comme %!STATUS!.
+ *
+ * Pourquoi la copie vers le débogueur est coupée par défaut (étape 6d) : avec
+ * KDNET, chaque DbgPrint gèle les processeurs de la VM le temps d'envoyer le
+ * message. Deux plantages 0x80 (NMI_HARDWARE_FAILURE, processeur au repos,
+ * aucune ligne de notre code sur la pile) sont survenus juste après des
+ * rafales de messages, WinDbg attaché ; quarante cycles de démarrage et
+ * d'arrêt sans débogueur, aucun. La cause exacte côté VMware et Windows reste
+ * déduite, pas prouvée (docs/pilote.md, 6d).
  *
  * Pourquoi pas DbgPrintEx seul, comme en 6b : rien ne resterait en mémoire
  * pour lire les derniers messages dans un vidage après un écran bleu, et
@@ -72,7 +82,11 @@
  * (doc MSVC, « MSVC new preprocessor overview », élision de la virgule).
  */
 #define DS720D_MSG(MSG, ...) "ds720d : " MSG "\n", ## __VA_ARGS__
-#define WPP_DEBUG(args) DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, DS720D_MSG args)
+/* Une expression et non une instruction : WPP place WPP_DEBUG dans une
+ * expression à virgules (tracemacro.tpl). */
+extern ULONG Ds720dEchoDebogueur;
+#define WPP_DEBUG(args) \
+    (Ds720dEchoDebogueur ? (void)DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, DS720D_MSG args) : (void)0)
 
 /*
  * Déclaration de la fonction de trace pour tracewpp, qui lit le bloc
