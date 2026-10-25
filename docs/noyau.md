@@ -74,6 +74,18 @@ Au premier branchement, le Windows invité lierait le scanner à USBSTOR et mont
 | 5f | Test-signing dans la VM, certificat de test, pilote minimal fait main (`DriverEntry`, un `DbgPrint`, déchargement ; aucun matériel) construit par nmake, signé, chargé dans la VM, message lu dans WinDbg | Claude écrit, David charge | **Oui** (bcdedit de la VM, premier chargement) |
 | 5g | Relecture de fond, CLAUDE.md, HISTORIQUE.md, tag `etape-5` | Claude | Non |
 
+## Installé en 5b (25/10)
+
+| Élément | Version, emplacement |
+| --- | --- |
+| Point de restauration | Créé par David avant les installations (cliché VSS de 14:46 vu sans élévation) |
+| WinDbg | 1.2610 (paquet `Microsoft.WinDbg`) |
+| WDK | 10.0.26100.6584 : en-têtes `Include\10.0.26100.0\km`, Debugging Tools apportés avec lui (`Debuggers\x64\kdnet.exe`) |
+| VMware Workstation Pro | 26.0.1 (26H1u1, build 25688693), téléchargé depuis le portail Broadcom ; SHA-256 conforme à la page, signature Authenticode « Broadcom Inc » valide |
+| Réseaux virtuels | VMnet1 (hôte seul) 192.168.50.1/24, celui de KDNET ; VMnet8 (NAT) 192.168.150.1/24 |
+
+Piège du portail Broadcom : le bouton de téléchargement reste sur « Screening Required » tant que le profil n'est pas complet, et la case des conditions ne se coche qu'après avoir ouvert le lien « Terms and Conditions ». Après installation : scanner toujours sous WinUSB, VBS et HVCI intacts.
+
 ## Retour arrière
 
 - **VM** : revenir à un instantané, ou supprimer la VM ; rien ne fuit vers Medabot.
