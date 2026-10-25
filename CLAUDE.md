@@ -29,8 +29,11 @@ Pilote écrit à la main pour le scanner USB **Brother DS-720D** (`VID_04F9&PID_
 
 ## Banc de test
 
-- Référence : captures USBPcap du logiciel Brother, rangées **hors du dépôt** dans `C:\Users\morva\ds720d-captures\`. Elles contiennent des images de documents : jamais commitées.
-- Notre code trace chaque transfert qu'il émet, au même format que l'analyseur de captures, pour comparer ligne à ligne. En phase noyau : traces WPP/DbgPrint.
+- Référence : captures USBPcap du logiciel Brother, rangées **hors du dépôt** dans `C:\Users\morva\ds720d-captures\` et consignées (empreinte, scénario) dans [docs/captures.md](docs/captures.md). Elles contiennent des images de documents : jamais commitées, pas plus que les images BMP.
+- Outils (`banc/`) : `analyse_capture.py` (décodage fait main), `contre_verif.py` (comparaison avec tshark), `capture.py` et la tâche planifiée `ds720d-capture` (captures sans élévation), `twain_banc.py` (scans du pilote Brother).
+- TWAIN ne sert qu'à faire travailler le pilote Brother pour les captures de référence (accord de David du 25/10) ; jamais dans notre code.
+- Toujours capturer avec `-s 262144` ; `--resume` de l'analyseur doit afficher « trames tronquées : 0 ».
+- Notre code trace chaque transfert qu'il émet au [format commun](docs/format-trace.md), pour comparer ligne à ligne avec les captures. En phase noyau : traces WPP/DbgPrint.
 
 ## Façon de travailler
 

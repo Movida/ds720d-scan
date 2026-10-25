@@ -4,4 +4,4 @@ Pilote écrit à la main, en C, pour le scanner mobile **Brother DS-720D** sous 
 
 Projet d'apprentissage : rétro-ingénierie du protocole USB par captures, prototype en espace utilisateur sur WinUSB, puis pilote noyau KMDF.
 
-État : étape 1, captures de référence du logiciel Brother. Voir [docs/passation.md](docs/passation.md) et [HISTORIQUE.md](HISTORIQUE.md).
+État : étape 1 terminée (captures de référence et banc d'analyse) ; étape 2, premier programme C sur WinUSB, à venir. Voir [docs/passation.md](docs/passation.md) et [HISTORIQUE.md](HISTORIQUE.md).

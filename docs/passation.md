@@ -1,4 +1,4 @@
-# Passation (mise à jour le 25/10/2026)
+# Passation (mise à jour le 25/10/2026, fin de l'étape 1)
 
 Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un pilote KMDF (voir [HISTORIQUE.md](../HISTORIQUE.md)). Les règles sont dans [CLAUDE.md](../CLAUDE.md).
 
@@ -19,7 +19,9 @@ Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un p
 | USBPcap | Service noyau `USBPcap` RUNNING ; `C:\Program Files\USBPcap\USBPcapCMD.exe`, absent de l'extcap Wireshark, donc piloté en ligne de commande |
 | Wireshark | 4.6.9 ; `C:\Program Files\Wireshark\tshark.exe` (hors PATH), sert seulement à contre-vérifier notre analyseur |
 | Python | 3.14.7, pour le banc de test |
-| Chaîne C | **Aucune** (ni MSVC, ni WDK) : à installer par David avant l'étape 2 |
+| Tâche planifiée `ds720d-capture` | Lance USBPcapCMD en admin pour Claude, depuis `C:\ProgramData\ds720d\` (voir [captures.md](captures.md)) |
+| Client TWAIN de banc | `banc/twain_banc.py`, fait scanner le pilote Brother sans Capture Tool ; côté référence seulement |
+| Chaîne C | **Aucune** : Build Tools Visual Studio et Windows SDK à installer par David avant l'étape 2, WDK avant l'étape 6 |
 
 ## Voie retenue
 
@@ -36,13 +38,14 @@ Cadre légal : l'art. L122-6-1 IV du CPI autorise l'étude d'un logiciel pour l'
 ## Feuille de route
 
 0. ✓ Reconnaissance (ci-dessus).
-1. Captures de référence, rien n'est envoyé au scanner :
+1. ✓ Captures de référence (25/10) ; notre code n'a rien envoyé au scanner, seul le logiciel Brother lui a parlé :
    - 1a. Docs alignées sur la cible KMDF.
    - 1b. Capture de l'énumération (débrancher, rebrancher).
-   - 1c. Capture d'un scan avec Capture Tool : page sans données perso, gris, 300 dpi, recto.
-   - 1d. Analyseur de captures fait main (pcap, en-tête USBPcap, CBW/CSW, opcodes SCSI, n° de trame).
-   - 1e. Captures complètes (`-s 262144`) de tous les scénarios dont on aura besoin, puisque WinUSB coupera le logiciel Brother : gris 300 dpi recto, couleur 300 dpi recto, recto-verso.
+   - 1c. Capture d'un scan avec Capture Tool (tronquée, remplacée par 1e).
+   - 1d. Analyseur de captures fait main, contre-vérifié par tshark.
+   - 1e. Captures pilotées par Claude (tâche planifiée, client TWAIN) : gris, couleur, noir et blanc 300 dpi, gris 600 dpi, recto-verso, « pas de papier ».
 2. Passage sous WinUSB et premier programme C : descripteurs lus par transferts de contrôle (USB 2.0 §9.4.3), Get Max LUN (BOT §3.2), INQUIRY encapsulé à la main, trace de chaque transfert.
+   - Prérequis : chaîne C installée par David. Piste à vérifier pour WinUSB : le pilote générique « WinUsb Device » de Windows (winusb.inf, livré avec le système), choisi à la main dans le Gestionnaire de périphériques, sans INF maison ni signature. Il coupe le logiciel Brother ; retour arrière en réinstallant USBSTOR.
 3. Rejouer la séquence de scan capturée : une page gris 300 dpi en image brute, puis PGM/PNG.
 4. Couleur et recto-verso.
 5. Préparation noyau (accord écrit de David) : VM avec passage USB, WinDbg, test-signing, point de restauration.
