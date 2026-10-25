@@ -16,9 +16,9 @@ Une ligne par évènement USB. L'analyseur de captures (`banc/analyse_capture.py
 
 | Colonne | Analyseur | Notre code C |
 | --- | --- | --- |
-| trame | numéro de trame Wireshark | numéro d'ordre du transfert |
-| temps | secondes depuis la première trame | secondes depuis le début du programme |
-| adr | adresse USB de l'appareil | adresse lue du descripteur de l'appareil, sinon 0 |
+| trame | numéro de trame Wireshark | numéro d'ordre de la ligne d'évènement (un SETUP et son CTRL-IN ont chacun le leur) |
+| temps | secondes depuis la première trame | secondes depuis l'ouverture de la trace |
+| adr | adresse USB de l'appareil | toujours 0 : WinUSB ne donne pas l'adresse |
 
 ## Évènements
 
@@ -41,6 +41,9 @@ Un opcode qui écrit sur le support ou le firmware (WRITE, FORMAT UNIT, WRITE BU
 
 ## Côté C et comparaison
 
-- `src/trace.c` écrit ce format pour notre code, avec les mêmes décodages et le même texte que l'analyseur. L'adresse vaut 0 : WinUSB ne la donne pas.
-- `banc/compare_traces.py REFERENCE NOTRE` compare l'évènement et le détail de chaque ligne, sans les colonnes trame, temps et adresse. `--sans-trames A-B` écarte des trames de la référence, `--sans-notre A-B` des transferts de notre trace, `--sans-tags` ignore les tags des CBW et CSW, choisis librement par chaque hôte (BOT §5.1).
+- `src/trace.c` écrit ce format pour notre code, avec le même texte que l'analyseur pour tout échange réussi : SETUP, CTRL-IN, CBW, DATA-IN, CSW, et les décodages de descripteurs, INQUIRY, sense et capacité.
+- Écarts voulus : les lignes `ERREUR` donnent le code Win32 rendu par WinUSB (« contrôle » ou « bulk ») au lieu du code `USBD_STATUS_*` ; notre code n'écrit pas de ligne `URB` ; le numéro de série masqué s'écrit « (numéro de série masqué) », sans la mention `--serie` propre à l'analyseur. Un chemin d'erreur ne peut donc pas concorder ligne à ligne.
+- Écarts connus, sans effet sur le DS-720D : un octet NUL au milieu d'un texte INQUIRY ou STRING le coupe côté C, pas côté analyseur.
+- `trace.c` masque aussi les réponses qui peuvent contenir le numéro de série (CLAUDE.md) : descripteur STRING d'index iSerialNumber, réponses 0xC5 de 128 et 165 o, page VPD 0x80 d'un INQUIRY.
+- `banc/compare_traces.py REFERENCE NOTRE` compare l'évènement et le détail de chaque ligne, sans les colonnes trame, temps et adresse. `--sans-trames A-B` écarte des trames de la référence, `--sans-notre A-B` des lignes de notre trace, `--sans-tags` ignore les tags des CBW et CSW, choisis librement par chaque hôte (BOT §5.1). Une trace vide de l'un ou l'autre côté fait échouer la comparaison.
 - Banc d'essai sans scanner : `construire.cmd`, puis `out\essai_trace.exe out\essai.txt` rejoue l'énumération de `1b-enumeration.pcap`, à comparer à `analyse_capture.py … --adresse 15 --de 19191 --a 19236` avec `--sans-trames 19207-19213 --sans-notre 11-14` (le numéro de série, remplacé par un faux dans l'essai).

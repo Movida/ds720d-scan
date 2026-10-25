@@ -103,8 +103,12 @@ static int chercher_winusb(SP_DRVINFO_DATA_W *pilote)
     SetupDiDestroyDriverInfoList(liste, &scanner, SPDIT_CLASSDRIVER);
     if (!SetupDiGetDeviceInstallParamsW(liste, &scanner, &p))
         return -1;
-    GetWindowsDirectoryW(p.DriverPath, MAX_PATH);
-    wcscat_s(p.DriverPath, MAX_PATH, L"\\INF\\winusb.inf");
+    UINT lg_dossier = GetWindowsDirectoryW(p.DriverPath, MAX_PATH);
+    if (lg_dossier == 0 || lg_dossier >= MAX_PATH ||
+        wcscat_s(p.DriverPath, MAX_PATH, L"\\INF\\winusb.inf") != 0) {
+        fprintf(stderr, "chemin de winusb.inf impossible à construire\n");
+        return -1;
+    }
     p.Flags |= DI_ENUMSINGLEINF;                /* cette INF seulement */
     p.FlagsEx |= DI_FLAGSEX_ALLOWEXCLUDEDDRVS;  /* y compris les modèles exclus des listes */
     if (!SetupDiSetDeviceInstallParamsW(liste, &scanner, &p) ||
@@ -194,9 +198,16 @@ int main(int argc, char **argv)
         retour_arriere();
         return 1;
     }
-    trouver();
+    if (trouver() != 0) {
+        fprintf(stderr, "installation faite, mais le scanner n'est plus visible pour vérifier : "
+                        "débrancher puis rebrancher, et vérifier (docs/winusb.md).\n");
+        return 1;
+    }
     propriete(SPDRP_SERVICE, service, sizeof service);
-    printf("fait : pilote %ls%s\n", service, redemarrage ? ", redémarrage de Windows demandé" : "");
+    printf("fait : pilote %ls\n", service);
+    if (redemarrage)
+        printf("Windows demande un redémarrage : USBSTOR reste chargé d'ici là. Fermer F: si "
+               "l'Explorateur l'affiche, redémarrer, et ne pas lancer ds720d avant.\n");
     SetupDiDestroyDeviceInfoList(liste);
     return 0;
 }

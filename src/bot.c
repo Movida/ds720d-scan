@@ -13,6 +13,9 @@
 #include "peripherique.h"
 #include "trace.h"
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 #include <stdio.h>
 #include <string.h>
 
@@ -26,8 +29,29 @@ static uint8_t ep_in, ep_out;
 /* dCBWTag : valeur libre que l'appareil recopie dans le CSW (BOT §5.1), pour
  * associer chaque CSW à son CBW. Windows y met l'adresse de l'IRP (le tag
  * 0xA41D25B0 de 1b est la fin de l'IRP 0xFFFFE609A41D25B0). Nous prenons un
- * simple compteur : lisible dans la trace, et jamais deux fois le même d'affilée. */
-static uint32_t prochain_tag = 1;
+ * compteur, mais qui part d'une valeur différente à chaque exécution (bot_init) :
+ * si une exécution précédente s'est arrêtée au milieu d'une commande, son CSW
+ * resté en attente porterait un autre tag et serait rejeté (BOT §6.3.1), au lieu
+ * d'être pris pour celui de notre nouvelle commande. */
+static uint32_t prochain_tag;
+
+/* Liste blanche des opcodes SCSI que ce module accepte d'envoyer (règle de
+ * CLAUDE.md : seulement des commandes observées dans une capture). Elle ne
+ * s'allonge que d'un opcode observé, avec la trame qui le montre. Tout le reste,
+ * et en particulier ce qui écrit sur le support (WRITE, FORMAT UNIT, MODE
+ * SELECT…), est refusé avant même la construction du CBW : la relecture du code
+ * ne suffit pas, une erreur de copie de CDB à l'étape 3 doit être arrêtée ici. */
+static const uint8_t opcodes_permis[] = {
+    0x12, /* INQUIRY, 1b trame 19225 */
+};
+
+static int opcode_permis(uint8_t op)
+{
+    for (size_t i = 0; i < sizeof opcodes_permis; i++)
+        if (opcodes_permis[i] == op)
+            return 1;
+    return 0;
+}
 
 static void pose_le32(uint8_t *p, uint32_t v)
 {
@@ -44,19 +68,28 @@ static uint32_t le32(const uint8_t *p)
 
 void bot_init(uint8_t in, uint8_t out)
 {
+    LARGE_INTEGER t;
     ep_in = in;
     ep_out = out;
+    /* Le compteur de performances change à chaque exécution : bon point de départ
+     * pour les tags, sans prétention d'aléa. */
+    QueryPerformanceCounter(&t);
+    prochain_tag = (uint32_t)t.QuadPart;
 }
 
 int bot_commande_in(uint8_t lun, const uint8_t *cdb, uint8_t lg_cdb,
                     uint8_t *donnees, uint32_t lg, struct bot_resultat *r)
 {
     uint8_t cbw[LG_CBW] = {0}, csw[LG_CSW];
-    uint32_t tag = prochain_tag++;
     long n;
 
     if (lg_cdb < 1 || lg_cdb > 16 || lun > 15) /* BOT §5.1 : CDB de 1 à 16 octets, LUN sur 4 bits */
         return -1;
+    if (!opcode_permis(cdb[0])) {
+        fprintf(stderr, "opcode SCSI 0x%02X refusé : absent de la liste blanche de bot.c\n", cdb[0]);
+        return -1;
+    }
+    uint32_t tag = prochain_tag++;
 
     /* 1. CBW, BOT §5.1, table 5.1 */
     pose_le32(cbw + 0, SIGNATURE_CBW); /* dCBWSignature */
@@ -107,5 +140,19 @@ int bot_commande_in(uint8_t lun, const uint8_t *cdb, uint8_t lg_cdb,
     }
     r->residu = le32(csw + 8); /* dCSWDataResidue */
     r->statut = csw[12];       /* bCSWStatus, table 5.3 */
+
+    /* CSW « significatif » (BOT §6.3.2) : statut 0, 1 ou 2, et un résidu qui ne
+     * dépasse pas ce qu'annonçait le CBW. */
+    if (r->statut > 2 || r->residu > lg) {
+        fprintf(stderr, "CSW non significatif : statut %u, résidu %u pour %u attendus (BOT §6.3.2)\n",
+                r->statut, r->residu, lg);
+        return -1;
+    }
+    if (r->statut == 2) {
+        /* Erreur de phase : l'appareil exige une Reset Recovery (BOT §5.3.4), que
+         * ce module ne fait pas encore. Rebrancher le scanner en tient lieu. */
+        fprintf(stderr, "CSW : erreur de phase, Reset Recovery nécessaire (BOT §5.3.4), arrêt\n");
+        return -1;
+    }
     return 0;
 }

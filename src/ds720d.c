@@ -101,7 +101,9 @@ static int lire_descripteurs(void)
      * bEndpointAddress). On ne suppose pas les valeurs vues dans 1b (0x81, 0x02) :
      * on les lit. */
     int dans_bot = 0;
-    for (size_t i = 0; i + 2 <= (size_t)n && d[i] >= 2; i += d[i]) {
+    /* Chaque descripteur doit tenir entier dans la réponse avant qu'on lise ses
+     * champs : un bLength trompeur ne doit pas faire lire au-delà de n. */
+    for (size_t i = 0; i + 2 <= (size_t)n && d[i] >= 2 && i + d[i] <= (size_t)n; i += d[i]) {
         const uint8_t *p = d + i;
         if (p[1] == 4 && p[0] >= 9) {
             dans_bot = p[5] == 0x08 && p[6] == 0x06 && p[7] == 0x50;
@@ -169,7 +171,8 @@ static int lire_max_lun(void)
  * CDB de 6 octets (SPC-4, « INQUIRY command ») :
  *   octet 0     0x12, code d'opération INQUIRY
  *   octet 1     0x00, EVPD à 0 : données standard, pas une page de données vitales
- *   octet 2     0x00, code de page (ignoré quand EVPD vaut 0)
+ *   octet 2     0x00, code de page : doit valoir 0 quand EVPD vaut 0 (sinon
+ *               CHECK CONDITION, INVALID FIELD IN CDB)
  *   octets 3-4  0x0024, longueur d'allocation en gros-boutiste : 36 octets, la
  *               taille des données standard minimales
  *   octet 5     0x00, octet de contrôle

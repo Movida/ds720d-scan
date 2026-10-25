@@ -15,7 +15,16 @@
 CFLAGS = /nologo /utf-8 /std:c17 /W4 /WX /Zi /Od /MT /Fdout\vc.pdb
 LDFLAGS = /nologo /DEBUG
 
-all: out\essai_trace.exe out\ds720d.exe out\bascule_winusb.exe
+all: out\essai_trace.exe out\essai_bot.exe out\ds720d.exe out\bascule_winusb.exe
+
+# Essai de bot.c contre un faux périphérique (bouchons dans essai_bot.c) :
+# ni peripherique.obj ni winusb.lib, rien ne peut partir vers le scanner.
+out\essai_bot.obj: src\essai_bot.c src\bot.h src\peripherique.h src\trace.h
+	@if not exist out mkdir out
+	cl $(CFLAGS) /c /Fo$@ src\essai_bot.c
+
+out\essai_bot.exe: out\essai_bot.obj out\bot.obj out\trace.obj
+	link $(LDFLAGS) /OUT:$@ out\essai_bot.obj out\bot.obj out\trace.obj
 
 out\bascule_winusb.obj: src\bascule_winusb.c
 	@if not exist out mkdir out
@@ -41,10 +50,10 @@ out\ds720d.obj: src\ds720d.c src\bot.h src\peripherique.h src\trace.h
 	@if not exist out mkdir out
 	cl $(CFLAGS) /c /Fo$@ src\ds720d.c
 
-# winusb.lib : fonctions WinUsb_* ; setupapi.lib : recherche du scanner (SetupDi*).
-# Toutes deux viennent du Windows SDK.
+# winusb.lib : fonctions WinUsb_* ; setupapi.lib : recherche du scanner (SetupDi*) ;
+# cfgmgr32.lib : état réel de l'appareil (CM_Get_DevNode_Status). Toutes viennent du Windows SDK.
 out\ds720d.exe: out\ds720d.obj out\bot.obj out\peripherique.obj out\trace.obj
-	link $(LDFLAGS) /OUT:$@ out\ds720d.obj out\bot.obj out\peripherique.obj out\trace.obj winusb.lib setupapi.lib
+	link $(LDFLAGS) /OUT:$@ out\ds720d.obj out\bot.obj out\peripherique.obj out\trace.obj winusb.lib setupapi.lib cfgmgr32.lib
 
 out\essai_trace.obj: src\essai_trace.c src\trace.h
 	@if not exist out mkdir out

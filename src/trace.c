@@ -1,9 +1,13 @@
 /*
  * trace.c : écriture de la trace au format commun (docs/format-trace.md).
  *
- * Le texte produit reprend mot pour mot celui de banc/analyse_capture.py, pour que
- * banc/compare_traces.py puisse confronter les deux traces sans traduction. Chaque
- * décodage cite la section de spec qu'il applique, comme dans l'analyseur.
+ * Le texte produit reprend celui de banc/analyse_capture.py pour tout échange qui
+ * réussit (SETUP, CTRL-IN, CBW, DATA-IN, CSW et leurs décodages), pour que
+ * banc/compare_traces.py puisse confronter les deux traces sans traduction. Écarts
+ * voulus ou connus, listés dans docs/format-trace.md : lignes ERREUR (code Win32
+ * au lieu de USBD_STATUS), pas de ligne URB, texte du numéro de série masqué, et
+ * quelques cas limites (NUL dans un texte). Chaque décodage cite la section de
+ * spec qu'il applique, comme dans l'analyseur.
  *
  * Pourquoi décoder en C plutôt que tracer seulement les octets bruts et décoder
  * après coup avec l'analyseur Python : on veut que notre programme « comprenne »
@@ -30,13 +34,14 @@
 #define SUITE "                                    | "
 
 static FILE *fichier;           /* copie de la trace sur disque, ou NULL */
-static unsigned numero;         /* numéro d'ordre du transfert (colonne « trame ») */
+static unsigned numero;         /* numéro d'ordre de la ligne d'évènement (colonne « trame ») */
 static LARGE_INTEGER t0, freq;  /* origine des temps et fréquence du compteur */
 
 /* État suivi entre deux appels, comme dans le décodeur de l'analyseur. */
 static uint8_t i_serie;         /* iSerialNumber lu dans le descripteur DEVICE, 0 si inconnu */
 static int cbw_en_cours;        /* un CBW attend son CSW */
 static uint32_t cbw_tag;
+static uint32_t cbw_lg_donnees; /* dCBWDataTransferLength du CBW en cours */
 static uint8_t cbw_cdb[16];
 static size_t cbw_lg_cdb;
 
@@ -227,10 +232,15 @@ static void decrire_descripteurs(const uint8_t *o, size_t lg_total, uint8_t inde
         } else if (typ == 3) { /* §9.6.7 : texte en UTF-16LE */
             WCHAR w[128];
             char texte[512];
-            int n = (lg - 2) / 2; /* un éventuel octet impair final est ignoré */
+            int n = (lg - 2) / 2;
             memcpy(w, d + 2, (size_t)n * 2); /* copie : d + 2 n'est pas forcément aligné */
-            int lt = WideCharToMultiByte(CP_UTF8, 0, w, n, texte, (int)sizeof texte - 1, NULL, NULL);
-            texte[lt > 0 ? lt : 0] = '\0';
+            int lt = WideCharToMultiByte(CP_UTF8, 0, w, n, texte, (int)sizeof texte - 4, NULL, NULL);
+            lt = lt > 0 ? lt : 0;
+            if ((lg - 2) % 2) { /* octet impair final : U+FFFD, comme errors="replace" */
+                memcpy(texte + lt, "\xEF\xBF\xBD", 3);
+                lt += 3;
+            }
+            texte[lt] = '\0';
             hexa(hx, sizeof hx, d + 2, (size_t)lg - 2, -1);
             snprintf(buf, sizeof buf, "STRING \xC2\xAB %s \xC2\xBB (%s)", texte, hx);
         } else {
@@ -254,7 +264,9 @@ static void decrire_descripteurs(const uint8_t *o, size_t lg_total, uint8_t inde
 static void nom_opcode(char *dst, size_t taille, int op)
 {
     /* Opcodes qui modifient le support ou le firmware : interdits par CLAUDE.md.
-     * Notre code ne les envoie jamais ; s'ils apparaissaient, la trace le crierait. */
+     * Cette liste, la même que celle de l'analyseur, ne sert qu'à signaler les
+     * plus courants dans la trace ; le vrai garde-fou est la liste blanche de
+     * bot.c, qui refuse tout opcode non observé avant l'envoi. */
     static const struct { uint8_t op; const char *nom; } dangereux[] = {
         {0x04, "FORMAT UNIT"}, {0x0A, "WRITE(6)"}, {0x2A, "WRITE(10)"},
         {0x2E, "WRITE AND VERIFY(10)"}, {0x3B, "WRITE BUFFER"}, {0xAA, "WRITE(12)"},
@@ -282,14 +294,19 @@ static void nom_opcode(char *dst, size_t taille, int op)
         snprintf(dst, taille, "opcode 0x%02X", op & 0xFF);
 }
 
-/* Champ ASCII des données INQUIRY, sans les espaces de bourrage ; un octet
- * non ASCII devient U+FFFD, comme decode("ascii", errors="replace"). */
+/* Les caractères ASCII que str.strip() de Python retire : espace, \t \n \v \f \r
+ * et les séparateurs 0x1C à 0x1F. */
+static int blanc(uint8_t c) { return c == ' ' || (c >= 0x09 && c <= 0x0D) || (c >= 0x1C && c <= 0x1F); }
+
+/* Champ ASCII des données INQUIRY, sans les blancs de bourrage ; un octet
+ * non ASCII devient U+FFFD, comme decode("ascii", errors="replace").strip().
+ * Écart connu : un octet NUL au milieu coupe le texte ici, pas dans l'analyseur. */
 static void texte_ascii(char *dst, size_t taille, const uint8_t *o, size_t lg)
 {
     size_t debut = 0, fin = lg, pos = 0;
-    while (debut < fin && (o[debut] == ' ' || o[debut] == '\t'))
+    while (debut < fin && blanc(o[debut]))
         debut++;
-    while (fin > debut && (o[fin - 1] == ' ' || o[fin - 1] == '\t'))
+    while (fin > debut && blanc(o[fin - 1]))
         fin--;
     for (size_t k = debut; k < fin && pos + 4 < taille; k++) {
         if (o[k] < 0x80) {
@@ -307,6 +324,29 @@ static void decrire_reponse_scsi(const uint8_t *d, size_t lg)
     char buf[LG_LIGNE];
     if (cbw_lg_cdb == 0 || lg == 0)
         return;
+    if (cbw_cdb[0] == 0x03 && lg >= 14 && ((d[0] & 0x7F) == 0x70 || (d[0] & 0x7F) == 0x71)) {
+        /* Sense au format fixe (SPC-4, « Fixed format sense data ») : clé octet 2,
+         * ASC octet 12, ASCQ octet 13. Clés : SPC-4, « Sense key descriptions ». */
+        static const char *cles[16] = {
+            "NO SENSE", "RECOVERED ERROR", "NOT READY", "MEDIUM ERROR", "HARDWARE ERROR",
+            "ILLEGAL REQUEST", "UNIT ATTENTION", "DATA PROTECT", "BLANK CHECK", "VENDOR SPECIFIC",
+            NULL, "ABORTED COMMAND", NULL, NULL, "MISCOMPARE", NULL,
+        };
+        unsigned cle = d[2] & 0x0F;
+        snprintf(buf, sizeof buf, "sense : cl\xC3\xA9 0x%X (%s) ASC/ASCQ = 0x%02X/0x%02X", cle,
+                 cles[cle] ? cles[cle] : "?", d[12], d[13]);
+        suite(buf);
+        return;
+    }
+    if (cbw_cdb[0] == 0x25 && lg >= 8) {
+        /* READ CAPACITY(10) (SBC-3) : dernier LBA et taille de bloc, gros-boutistes. */
+        unsigned long long dernier = (unsigned long long)d[0] << 24 | d[1] << 16 | d[2] << 8 | d[3];
+        unsigned long long bloc = (unsigned long long)d[4] << 24 | d[5] << 16 | d[6] << 8 | d[7];
+        snprintf(buf, sizeof buf, "capacit\xC3\xA9 : %llu blocs de %llu o = %llu o", dernier + 1, bloc,
+                 (dernier + 1) * bloc);
+        suite(buf);
+        return;
+    }
     if (cbw_cdb[0] == 0x12 && cbw_lg_cdb > 1 && !(cbw_cdb[1] & 1) && lg >= 36) {
         /* Données INQUIRY standard (SPC-4, « Standard INQUIRY data ») : type de
          * périphérique sur 5 bits, bit RMB, vendeur 8..15, produit 16..31, révision 32..35. */
@@ -418,6 +458,7 @@ void trace_cbw(const uint8_t cbw[31])
         return;
     }
     cbw_tag = le32(cbw + 4);
+    cbw_lg_donnees = le32(cbw + 8);
     cbw_lg_cdb = cbw[14] > 16 ? 16 : cbw[14];
     memcpy(cbw_cdb, cbw + 15, 16);
     cbw_en_cours = 1;
@@ -428,9 +469,28 @@ void trace_cbw(const uint8_t cbw[31])
     ligne("CBW", buf);
 }
 
+/* Vrai si la réponse à la commande en cours peut contenir le numéro de série
+ * (CLAUDE.md) : réponses 0xC5 de 128 et 165 octets, page VPD 0x80 (« Unit Serial
+ * Number », SPC-4) d'un INQUIRY. Leurs octets ne vont jamais dans une trace. */
+static int contient_serie(size_t lg)
+{
+    if (!cbw_en_cours || cbw_lg_cdb == 0)
+        return 0;
+    if (cbw_cdb[0] == 0xC5 && (lg == 128 || lg == 165 || cbw_lg_donnees == 128 || cbw_lg_donnees == 165))
+        return 1;
+    return cbw_cdb[0] == 0x12 && cbw_lg_cdb > 2 && (cbw_cdb[1] & 1) && cbw_cdb[2] == 0x80;
+}
+
 void trace_data_in(const uint8_t *donnees, size_t lg)
 {
     char hx[LG_LIGNE], buf[LG_LIGNE];
+    if (lg == 0)
+        return; /* paquet vide : l'analyseur n'en fait pas de ligne non plus */
+    if (contient_serie(lg)) {
+        snprintf(buf, sizeof buf, "%zu o  (num\xC3\xA9ro de s\xC3\xA9rie masqu\xC3\xA9)", lg);
+        ligne("DATA-IN", buf);
+        return;
+    }
     hexa(hx, sizeof hx, donnees, lg, OCTETS_MAX);
     snprintf(buf, sizeof buf, "%zu o  %s", lg, hx);
     ligne("DATA-IN", buf);

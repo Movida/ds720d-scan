@@ -20,6 +20,8 @@ Un appareil USB n'a qu'un pilote de fonction à la fois. Sous WinUSB, F: dispara
    ```
    Sans `--oui`, et sans droits admin, le programme dit seulement ce qu'il ferait.
 
+Si le programme annonce que Windows demande un redémarrage (F: encore ouvert dans l'Explorateur, par exemple), USBSTOR reste chargé jusque-là : redémarrer avant de lancer `ds720d`, qui le refuserait de toute façon (il vérifie que l'appareil tourne vraiment, `CM_Get_DevNode_Status`, et pas seulement le service inscrit au registre).
+
 `src/bascule_winusb.c` ne vise que `USB\VID_04F9&PID_60E2` et refuse s'il en trouve zéro ou plusieurs. Il passe la classe d'installation du scanner à USBDevice, prend dans `winusb.inf` le modèle dont la section est `WINUSB` (et pas la variante de filtre `WINUSB_LowerFilter`, ni les modèles Billboard et ADB), puis l'installe avec `DiInstallDevice`.
 
 ### Pourquoi pas le Gestionnaire de périphériques

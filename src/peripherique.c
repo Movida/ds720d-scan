@@ -19,15 +19,18 @@
 #include <windows.h>
 /* initguid.h avant usbiodef.h : le GUID y est alors défini, pas seulement déclaré. */
 #include <initguid.h>
+#include <cfgmgr32.h>
 #include <setupapi.h>
 #include <usbiodef.h>
 #include <winusb.h>
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wchar.h>
 
 static HANDLE fichier = INVALID_HANDLE_VALUE;   /* poignée sur le scanner */
+static uint8_t delais_poses[32];                /* délai bulk posé, par endpoint */
 static WINUSB_INTERFACE_HANDLE winusb;          /* poignée WinUSB sur son interface 0 */
 
 /* Délai maximal d'un transfert de contrôle : la réponse la plus lente de 1b
@@ -40,12 +43,27 @@ static WINUSB_INTERFACE_HANDLE winusb;          /* poignée WinUSB sur son inter
  * grande marge tout en évitant d'attendre indéfiniment un scanner muet. */
 #define DELAI_BULK_MS 5000
 
-/* Lit une propriété texte (REG_SZ ou REG_MULTI_SZ) d'un appareil. */
+/* Lit une propriété texte (REG_SZ ou REG_MULTI_SZ) d'un appareil. Le tampon est
+ * mis à zéro et ses deux derniers caractères sont réservés : la chaîne (ou la
+ * liste de chaînes) est toujours terminée, même si le registre ne l'était pas. */
 static int propriete(HDEVINFO liste, SP_DEVINFO_DATA *app, DWORD prop, wchar_t *dst, DWORD taille)
 {
     DWORD type;
-    dst[0] = L'\0';
-    return SetupDiGetDeviceRegistryPropertyW(liste, app, prop, &type, (BYTE *)dst, taille, NULL) ? 0 : -1;
+    memset(dst, 0, taille);
+    return SetupDiGetDeviceRegistryPropertyW(liste, app, prop, &type, (BYTE *)dst,
+                                             taille - 2 * sizeof(wchar_t), NULL) ? 0 : -1;
+}
+
+/* Vrai si l'appareil tourne vraiment : démarré, sans code de problème, sans
+ * redémarrage de Windows en attente. Le service lu dans le registre ne suffit
+ * pas : juste après une bascule qui demande un redémarrage, le registre dit
+ * déjà WINUSB alors qu'USBSTOR est encore chargé. */
+static int demarre(DEVINST app)
+{
+    ULONG etat = 0, probleme = 0;
+    if (CM_Get_DevNode_Status(&etat, &probleme, app, 0) != CR_SUCCESS)
+        return 0;
+    return (etat & DN_STARTED) && !(etat & DN_HAS_PROBLEM) && !(etat & DN_NEED_RESTART);
 }
 
 /* Vrai si l'une des chaînes d'une liste REG_MULTI_SZ vaut motif (sans casse). */
@@ -81,7 +99,9 @@ int periph_ouvrir(void)
         /* Le détail (chemin d'accès) a une taille variable : premier appel pour la
          * connaître, second pour le lire. */
         DWORD taille = 0;
-        SetupDiGetDeviceInterfaceDetailW(liste, &itf, NULL, 0, &taille, NULL);
+        if (!SetupDiGetDeviceInterfaceDetailW(liste, &itf, NULL, 0, &taille, NULL) &&
+            (GetLastError() != ERROR_INSUFFICIENT_BUFFER || taille < sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W)))
+            continue; /* taille inconnue : on n'alloue pas un tampon trop petit pour cbSize */
         SP_DEVICE_INTERFACE_DETAIL_DATA_W *detail = malloc(taille);
         SP_DEVINFO_DATA app = {sizeof app};
         if (!detail)
@@ -91,8 +111,7 @@ int periph_ouvrir(void)
             wchar_t ids[1024], service[64];
             /* On reconnaît le scanner à son identifiant matériel plutôt qu'au chemin,
              * dont le format n'est pas documenté. */
-            if (propriete(liste, &app, SPDRP_HARDWAREID, ids, sizeof ids - 2 * sizeof(wchar_t)) == 0 &&
-                contient(ids, ident)) {
+            if (propriete(liste, &app, SPDRP_HARDWAREID, ids, sizeof ids) == 0 && contient(ids, ident)) {
                 trouve = 1;
                 propriete(liste, &app, SPDRP_SERVICE, service, sizeof service);
                 if (_wcsicmp(service, L"WINUSB") != 0) {
@@ -100,6 +119,9 @@ int periph_ouvrir(void)
                      * l'ouvre pas, pour ne rien envoyer à la pile de stockage. */
                     fprintf(stderr, "Le scanner est sous le pilote « %ls », pas WinUSB : "
                                     "voir docs/winusb.md.\n", service);
+                } else if (!demarre(app.DevInst)) {
+                    fprintf(stderr, "Le scanner est inscrit sous WinUSB mais ne tourne pas encore "
+                                    "(redémarrage en attente ou problème) : voir docs/winusb.md.\n");
                 } else {
                     /* FILE_FLAG_OVERLAPPED : exigé par WinUSB, même pour des appels
                      * synchrones (doc WinUsb_Initialize). */
@@ -128,13 +150,19 @@ int periph_ouvrir(void)
         return -1;
     }
     ULONG delai = DELAI_CONTROLE_MS;
-    WinUsb_SetPipePolicy(winusb, 0x00, PIPE_TRANSFER_TIMEOUT, sizeof delai, &delai);
+    if (!WinUsb_SetPipePolicy(winusb, 0x00, PIPE_TRANSFER_TIMEOUT, sizeof delai, &delai)) {
+        /* Sans délai, WinUSB attendrait indéfiniment un scanner muet. */
+        fprintf(stderr, "délai du pipe de contrôle refusé (Win32=%lu)\n", GetLastError());
+        periph_fermer();
+        return -1;
+    }
     trace_note("scanner ouvert par WinUSB (interface GUID_DEVINTERFACE_USB_DEVICE)");
     return 0;
 }
 
 void periph_fermer(void)
 {
+    memset(delais_poses, 0, sizeof delais_poses); /* à reposer à la prochaine ouverture */
     if (winusb) {
         WinUsb_Free(winusb);
         winusb = NULL;
@@ -172,22 +200,28 @@ long periph_controle(const uint8_t setup[8], uint8_t *donnees)
     return (long)transferes;
 }
 
-/* Le délai est une politique de pipe WinUSB, à poser une fois par endpoint. */
-static void delai_bulk(uint8_t endpoint)
+/* Le délai est une politique de pipe WinUSB, à poser une fois par endpoint et
+ * par ouverture. Renvoie -1 si WinUSB la refuse : sans délai, une lecture
+ * attendrait indéfiniment un scanner muet, on préfère ne pas lancer le transfert. */
+static int delai_bulk(uint8_t endpoint)
 {
-    static uint8_t faits[32];
     unsigned i = (endpoint & 0x0F) | ((endpoint & 0x80) ? 16 : 0);
-    if (!faits[i]) {
+    if (!delais_poses[i]) {
         ULONG delai = DELAI_BULK_MS;
-        WinUsb_SetPipePolicy(winusb, endpoint, PIPE_TRANSFER_TIMEOUT, sizeof delai, &delai);
-        faits[i] = 1;
+        if (!WinUsb_SetPipePolicy(winusb, endpoint, PIPE_TRANSFER_TIMEOUT, sizeof delai, &delai)) {
+            fprintf(stderr, "délai du pipe 0x%02X refusé (Win32=%lu)\n", endpoint, GetLastError());
+            return -1;
+        }
+        delais_poses[i] = 1;
     }
+    return 0;
 }
 
 long periph_bulk_ecrire(uint8_t endpoint, const uint8_t *donnees, size_t lg, unsigned long *erreur)
 {
     ULONG transferes = 0;
-    delai_bulk(endpoint);
+    if (delai_bulk(endpoint) != 0)
+        return -1;
     /* WinUsb_WritePipe prend un tampon non constant, sans le modifier (doc WDK). */
     if (!WinUsb_WritePipe(winusb, endpoint, (PUCHAR)donnees, (ULONG)lg, &transferes, NULL)) {
         unsigned long e = GetLastError();
@@ -202,7 +236,8 @@ long periph_bulk_ecrire(uint8_t endpoint, const uint8_t *donnees, size_t lg, uns
 long periph_bulk_lire(uint8_t endpoint, uint8_t *donnees, size_t lg, unsigned long *erreur)
 {
     ULONG transferes = 0;
-    delai_bulk(endpoint);
+    if (delai_bulk(endpoint) != 0)
+        return -1;
     if (!WinUsb_ReadPipe(winusb, endpoint, donnees, (ULONG)lg, &transferes, NULL)) {
         unsigned long e = GetLastError();
         trace_erreur(endpoint, "bulk", e);

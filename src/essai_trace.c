@@ -28,7 +28,9 @@ struct controle {
 };
 
 /* Copiés des trames de 1b (premier nombre du commentaire : trame du SETUP,
- * second : trame de la réponse). */
+ * second : trame de la réponse), sauf la chaîne du numéro de série, remplacée
+ * par un faux plus court (le SETUP de 19212 demande alors 10 octets au lieu de
+ * 34) ; ces lignes-là sont exclues de la comparaison. */
 static const struct controle controles[] = {
     /* 19191 / 19194 : GET_DESCRIPTOR DEVICE, 18 octets */
     {{0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x12, 0x00},

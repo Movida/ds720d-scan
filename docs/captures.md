@@ -128,7 +128,7 @@ Constats, à approfondir à l'étape 3 :
 
 ## Captures de notre code (étape 2)
 
-Même méthode (tâche planifiée, `-s 262144`), mais c'est notre programme qui parle au scanner, sous WinUSB. Elles servent au contrôle croisé : notre trace, la capture de notre passage et la référence doivent concorder (`banc/compare_traces.py`).
+Même méthode (tâche planifiée, `-s 262144`), mais c'est notre programme qui parle au scanner, sous WinUSB. Elles servent au contrôle croisé : notre trace, la capture de notre passage et la référence doivent concorder (`banc/compare_traces.py`). Les traces texte (`--trace`, et la sortie de l'analyseur sur chaque capture) sont rangées dans `C:\Users\morva\ds720d-captures\traces\`, hors du dépôt comme les captures.
 
 **Piège** : après une bascule par `pnputil /remove-device` puis `/scan-devices`, USBPcap ne voit plus le scanner (`2d-descripteurs.pcap`, 25/10 : aucune trame du scanner alors que le programme a bien échangé avec lui). Un débranchement physique du câble suffit à le rattacher. Le scanner garde alors WinUSB.
 
@@ -138,3 +138,4 @@ Même méthode (tâche planifiée, `-s 262144`), mais c'est notre programme qui 
 | `2d-descripteurs-2` | `ds720d descripteurs`, après rebranchement (adresse 31) | 5 SETUP, 0 erreur ; concordance parfaite avec notre trace et avec 1b (trames 19191 à 19206) | `28194EAA734C05FB82D50CD83751229E5E20E169E6EBD5BD287369315BC8FD7F` |
 | `2e-lun` | `ds720d lun` : descripteurs puis GET_MAX_LUN | 6 SETUP, 0 erreur, plus haut LUN 0 ; concordance parfaite avec notre trace et avec 1b (trames 19191 à 19206, 19223, 19224) | `ABC4ADD2AC07943AA70B29BC00C688967FDB7543EF9BD5C9805685E4BDC299A7` |
 | `2f-inquiry` | `ds720d inquiry` : descripteurs, GET_MAX_LUN, puis INQUIRY dans un CBW fait main (tag 1) | 6 SETUP, 1 CBW, 1 CSW statut 0, 0 erreur ; concordance parfaite avec notre trace et avec 1b (trames 19191 à 19206, 19223 à 19230, tags ignorés) ; `contre_verif.py` : 0 écart | `225CC0D46BBDCCF5BD1F0E3AE946CA658FC238F002D9FD37F968877465488C07` |
+| `2f-inquiry-2` | `ds720d inquiry` après les corrections de la relecture de fond (tag de départ variable, adresse 117) | 6 SETUP, 1 CBW, 1 CSW statut 0, 0 erreur ; concordance parfaite avec notre trace et avec 1b (tags ignorés) | `17EBBF24300B40848E788D0D00997345E0700FBD6AC0C30454448DE60B98FA84` |

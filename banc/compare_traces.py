@@ -73,6 +73,11 @@ def main():
     notre = lire(args.notre, args.sans_notre, args.sans_tags)
     ecarts = list(difflib.unified_diff(ref, notre, "référence", "notre", lineterm="", n=1))
     print(f"# référence : {len(ref)} lignes, notre trace : {len(notre)} lignes")
+    if not ref or not notre:
+        # Deux traces vides « concordent » sans rien prouver : une capture qui n'a
+        # rien vu (piège USBPcap après pnputil) doit faire échouer la comparaison.
+        print("# échec : une des deux traces est vide")
+        return 1
     if not ecarts:
         print("# concordance parfaite")
         return 0
