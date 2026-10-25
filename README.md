@@ -1,7 +1,7 @@
 # ds720d-scan
 
-Outil de numérisation en espace utilisateur pour le scanner mobile **Brother DS-720D**, sous Windows 11, sans pilote propriétaire ni pilote noyau.
+Pilote écrit à la main, en C, pour le scanner mobile **Brother DS-720D** sous Windows 11, sans bibliothèque ni pilote propriétaire.
 
-Projet d'apprentissage : rétro-ingénierie du protocole, puis outil en ligne de commande (recto-verso, PDF multipage).
+Projet d'apprentissage : rétro-ingénierie du protocole USB par captures, prototype en espace utilisateur sur WinUSB, puis pilote noyau KMDF.
 
-État : reconnaissance faite, capture du protocole à venir. Voir [docs/passation.md](docs/passation.md).
+État : étape 1, captures de référence du logiciel Brother. Voir [docs/passation.md](docs/passation.md) et [HISTORIQUE.md](HISTORIQUE.md).

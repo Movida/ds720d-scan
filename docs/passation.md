@@ -1,55 +1,51 @@
-# Passation (24/10/2026)
+# Passation (mise à jour le 25/10/2026)
 
-Repris du projet Claude « Personnel ». Plan détaillé : [Pilote maison du scanner DS-720D](https://claude.ai/artifact/TZYjntxdcNmkXe43hS9rGw).
-
-## Ce qui existe
-
-| Travail | Apport | Limite |
-| --- | --- | --- |
-| `libsane-dsseries` 1.0.5 (Brother, Linux) | Couvre DS-620/720D/820W/920DW ; prouve qu'un pilote en espace utilisateur suffit | Binaire fermé |
-| Retours Linux du DS-620 ([Arch](https://bbs.archlinux.org/viewtopic.php?id=250065)) | Le DS-620 s'annonce en USB Mass Storage ; le pilote Brother lui parle par `/dev/sg` (SCSI brut) | — |
-| Backend SANE `avision` (GPL, [source](https://gitlab.com/sane-project/backends/-/raw/master/backend/avision.c)) | Jeu de commandes SCSI Avision (OEM de Brother) ; Brother PDS-6000F ajouté en 03/2026 | Pas le DS-720D |
-
-Aucun pilote libre du DS-720D n'a été trouvé.
+Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un pilote KMDF (voir [HISTORIQUE.md](../HISTORIQUE.md)). Les règles sont dans [CLAUDE.md](../CLAUDE.md).
 
 ## Reconnaissance sur Medabot (24/10, lecture seule)
 
 | Élément | Valeur |
 | --- | --- |
-| USB | `VID_04F9&PID_60E2`, rév. 0100, classe 08/06/50 (Mass Storage, Bulk-Only, SCSI transparent) |
+| USB | `VID_04F9&PID_60E2`, rév. 0100, classe 08/06/50 (Mass Storage, sous-classe SCSI transparent, protocole Bulk-Only) |
 | Pilotes liés | `USBSTOR` (usbstor.inf) puis `disk` (disk.inf) ; aucun pilote Brother/NovaTek |
 | INQUIRY | Vendeur « Brother », produit « DS-720D », révision « 0.27 » |
 | Disque | `\\.\PhysicalDrive3`, 1 048 576 o, MBR, une partition FAT12 vide montée en **F:** |
-| Logiciel Brother | `NvUSBScan.dll` 12.1.13.28 « NovaTek Msdc Ext » (System32 + SysWOW64) ; TWAIN `twain_32\Brother\DS-720D\DS-720D.ds` et `twain_64\…` ; service `Mobile_Series` actif |
+| Logiciel Brother | `NvUSBScan.dll` 12.1.13.28 « NovaTek Msdc Ext » (System32 + SysWOW64) ; TWAIN `twain_32\Brother\DS-720D\DS-720D.ds` et `twain_64\…` ; service `Mobile_Series` actif ; `Capture Tool.exe` |
+
+## Outils en place (25/10)
+
+| Outil | État |
+| --- | --- |
+| USBPcap | Service noyau `USBPcap` RUNNING ; `C:\Program Files\USBPcap\USBPcapCMD.exe`, absent de l'extcap Wireshark, donc piloté en ligne de commande |
+| Wireshark | 4.6.9 ; `C:\Program Files\Wireshark\tshark.exe` (hors PATH), sert seulement à contre-vérifier notre analyseur |
+| Python | 3.14.7, pour le banc de test |
+| Chaîne C | **Aucune** (ni MSVC, ni WDK) : à installer par David avant l'étape 2 |
 
 ## Voie retenue
 
-Parler au scanner depuis l'espace utilisateur avec les pilotes Microsoft déjà présents : `DeviceIoControl(IOCTL_SCSI_PASS_THROUGH_DIRECT)` sur `\\.\PhysicalDriveN` (droits admin requis). Rien à installer côté pilote, Secure Boot intact. Repli : WinUSB + libusb, seulement avec l'accord de David.
+1. **Écouter** le logiciel Brother (USBPcap) pour obtenir la séquence de référence.
+2. **Rejouer** en C depuis l'espace utilisateur sur WinUSB, en construisant nous-mêmes les CBW (BOT §5.1), en lisant les CSW (BOT §5.2) et les données par transferts bulk.
+3. **Descendre** dans un pilote KMDF qui fait la même chose avec des URB, une fois le protocole maîtrisé.
 
-Inconnue principale : le logiciel envoie-t-il des **commandes SCSI propriétaires** (style Avision : SET WINDOW 0x24, READ 0x28…) ou **lit-il et écrit-il des secteurs précis** du faux disque (méthode « MSDC » courante chez NovaTek) ? La capture de l'étape 3 tranche.
+Pourquoi pas le SCSI pass-through sur USBSTOR (voie du 24/10) : `IOCTL_SCSI_PASS_THROUGH_DIRECT` laisse Windows construire les CBW et gérer le transport, on ne voit ni les endpoints ni les transferts bulk. Contraire à l'objectif « le plus bas possible ».
+
+Inconnue principale : le logiciel envoie-t-il des **commandes SCSI propriétaires** (style Avision : SET WINDOW 0x24, READ 0x28…) ou **lit-il et écrit-il des secteurs précis** du faux disque (méthode « MSDC » courante chez NovaTek) ? La capture 1c tranche. Si c'est la seconde, l'écriture de secteurs heurte la règle « jamais écrire sur F: » : décision à prendre avec David avant d'envoyer quoi que ce soit.
 
 Cadre légal : l'art. L122-6-1 IV du CPI autorise l'étude d'un logiciel pour l'interopérabilité.
 
-## Plan
+## Feuille de route
 
 0. ✓ Reconnaissance (ci-dessus).
-1. Premier `INQUIRY` en Python `ctypes` par SCSI pass-through.
-2. Étude du backend SANE avision.
-3. Capture d'une numérisation faite avec le logiciel Brother (USBPcap + Wireshark), décodage SCSI.
-4. Prototype : une page, gris, 300 dpi → PNG ; puis couleur et recto-verso.
-5. Outil : `ds720d scan --duplex --pdf`, gestion propre des droits admin.
-6. Retrait du logiciel Brother (feu vert de David).
+1. Captures de référence, rien n'est envoyé au scanner :
+   - 1a. Docs alignées sur la cible KMDF.
+   - 1b. Capture de l'énumération (débrancher, rebrancher).
+   - 1c. Capture d'un scan avec Capture Tool : page sans données perso, gris, 300 dpi, recto.
+   - 1d. Analyseur de captures fait main (pcap, en-tête USBPcap, CBW/CSW, opcodes SCSI, n° de trame).
+2. Passage sous WinUSB et premier programme C : descripteurs lus par transferts de contrôle (USB 2.0 §9.4.3), Get Max LUN (BOT §3.2), INQUIRY encapsulé à la main, trace de chaque transfert.
+3. Rejouer la séquence de scan capturée : une page gris 300 dpi en image brute, puis PGM/PNG.
+4. Couleur et recto-verso.
+5. Préparation noyau (accord écrit de David) : VM avec passage USB, WinDbg, test-signing, point de restauration.
+6. Pilote KMDF : configuration, pipes bulk, URB, interface IOCTL vers un petit outil utilisateur, traces WPP.
+7. Outil final et retrait du logiciel Brother (feu vert de David).
 
-## En attente au 24/10
-
-David installe lui-même (le mode auto de Claude Code bloque winget) puis redémarre :
-
-```
-winget install --id desowin.USBPcap -e --accept-package-agreements --accept-source-agreements
-winget install --id WiresharkFoundation.Wireshark -e --accept-package-agreements --accept-source-agreements
-winget install --id Python.Python.3.14 -e --scope user --accept-package-agreements --accept-source-agreements
-```
-
-Ensuite : vérifier les versions et les chemins de `USBPcapCMD.exe` et `tshark.exe`, puis capturer.
-
-Accès au PC : session Remote Control sur « Medabot (claude-chrome) », dossier `C:\Users\morva\claude-chrome`.
+Accès au PC : session Remote Control sur « Medabot (claude-chrome) », dépôt dans `C:\Users\morva\claude-chrome\ds720d-scan`.
