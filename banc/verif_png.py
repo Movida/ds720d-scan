@@ -161,6 +161,8 @@ def main():
     ap.add_argument("--bmp", help="BMP du pilote Brother à comparer")
     args = ap.parse_args()
     args.brut, chemin_brut = args.brut_seul, args.brut
+    if args.verso and (args.brut or args.ppp_y == 600):
+        ap.error("--verso ne va ni avec --brut ni avec --ppp-y 600 (convertir les refuse aussi)")
     image = Path(args.image).read_bytes()
     brut = Path(chemin_brut).read_bytes()
     if len(brut) % OCTETS_LIGNE:

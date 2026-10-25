@@ -58,7 +58,7 @@ class Brut:
 class BrutMiroir(Brut):
     """Le même brut lu de droite à gauche. La face arrière du recto-verso arrive
     en miroir horizontal (étape 4a : brute, elle corrèle à -0,63 avec le BMP du
-    pilote, retournée à 0,994) ; un capteur qui regarde l'autre face de la feuille
+    pilote, retournée à 0,998) ; un capteur qui regarde l'autre face de la feuille
     la voit à l'envers de gauche à droite, mais dans le même sens de défilement."""
 
     def point(self, x, y, p):

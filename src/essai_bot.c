@@ -248,8 +248,8 @@ int main(void)
                                16);
     total++, bons += cas_depot("dépôt SEND 0x95 de Capture Tool refusé", send95_ct, sizeof send95_ct, 0, 0, -1, 0);
     /* Étape 4e : la fenêtre du recto-verso (1e-gris-300-recto-verso trame 2500)
-     * passe ; la même avec la résolution Y à 600 (octet 23 à 0x58), un recto-verso
-     * à 600 dpi qu'aucune capture ne montre, est refusée. */
+     * passe ; la même avec la résolution Y à 600 (octets 22-23 à 02 58), un
+     * recto-verso à 600 dpi qu'aucune capture ne montre, est refusée. */
     static uint8_t fenetre_rv[89] = {
         0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x47,
         0x00, 0x00, 0x01, 0x2c, 0x01, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x80,
@@ -258,6 +258,7 @@ int main(void)
         0x64, 0x00, 0x64, 0x10, 0x00, 0x00, 0x00, 0x0b, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
     total++, bons += cas_depot("dépôt SET WINDOW recto-verso accepté (étape 4e), 16 CBW", fenetre_rv,
                                sizeof fenetre_rv, 0, 0, 0, 16);
+    fenetre_rv[22] = 0x02;
     fenetre_rv[23] = 0x58;
     total++, bons += cas_depot("SET WINDOW recto-verso à 600 dpi, jamais observé, refusé", fenetre_rv,
                                sizeof fenetre_rv, 0, 0, -1, 0);

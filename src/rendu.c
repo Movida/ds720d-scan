@@ -26,14 +26,14 @@
 /* Courbe de tons du gris, docs/courbe-gris.txt (étape 4c) : médiane des valeurs
  * du BMP du pilote pour chaque valeur brute du plan vert, sur six faces
  * (1e-gris-300-recto-twain-3, les quatre faces de 1e-gris-300-recto-verso,
- * 1e-gris-600-recto), mesurée de 45 à 177 ; ailleurs, la loi de puissance
- * 255 · (v / 255)^0,5544 qui colle à la mesure à 1,1 niveau près.
+ * 1e-gris-600-recto), mesurée de 0 à 177 ; au-dessus, la loi de puissance
+ * 255 · (v / 255)^0,5536, qui colle à la mesure à 1 niveau près de 40 à 177.
  * Pourquoi une table plutôt que pow() : elle garde la mesure telle quelle là où
  * elle existe, et le rendu reste en entiers, comme le fera le pilote noyau. */
 const uint8_t rendu_courbe_gris[256] = {
-      0,  12,  17,  22,  25,  29,  32,  35,  37,  40,  42,  45,  47,  49,  51,  53,  /*   0- 15 */
-     55,  57,  59,  60,  62,  64,  66,  67,  69,  70,  72,  73,  75,  76,  78,  79,  /*  16- 31 */
-     81,  82,  83,  85,  86,  87,  89,  90,  91,  93,  94,  95,  96,  97,  98, 100,  /*  32- 47 */
+      0,  12,  17,  17,  22,  25,  29,  32,  35,  35,  37,  42,  44,  47,  51,  53,  /*   0- 15 */
+     55,  57,  58,  60,  62,  64,  65,  67,  69,  70,  72,  73,  75,  76,  78,  79,  /*  16- 31 */
+     80,  82,  83,  85,  86,  87,  89,  90,  91,  92,  94,  95,  96,  97,  98, 100,  /*  32- 47 */
     101, 102, 103, 104, 105, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117,  /*  48- 63 */
     118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133,  /*  64- 79 */
     134, 135, 136, 137, 138, 139, 139, 140, 141, 142, 143, 144, 145, 146, 146, 147,  /*  80- 95 */
@@ -43,9 +43,9 @@ const uint8_t rendu_courbe_gris[256] = {
     186, 187, 188, 188, 189, 190, 191, 191, 192, 193, 193, 194, 195, 195, 196, 197,  /* 144-159 */
     198, 198, 199, 200, 200, 201, 201, 202, 202, 204, 204, 205, 206, 206, 207, 208,  /* 160-175 */
     208, 209, 209, 210, 210, 211, 212, 212, 213, 213, 214, 215, 215, 216, 217, 217,  /* 176-191 */
-    218, 219, 219, 220, 220, 221, 222, 222, 223, 223, 224, 225, 225, 226, 227, 227,  /* 192-207 */
+    218, 219, 219, 220, 220, 221, 222, 222, 223, 224, 224, 225, 225, 226, 227, 227,  /* 192-207 */
     228, 228, 229, 230, 230, 231, 231, 232, 233, 233, 234, 234, 235, 236, 236, 237,  /* 208-223 */
-    237, 238, 238, 239, 240, 240, 241, 241, 242, 243, 243, 244, 244, 245, 245, 246,  /* 224-239 */
+    237, 238, 239, 239, 240, 240, 241, 241, 242, 243, 243, 244, 244, 245, 245, 246,  /* 224-239 */
     247, 247, 248, 248, 249, 249, 250, 251, 251, 252, 252, 253, 253, 254, 254, 255,  /* 240-255 */
 };
 
@@ -97,8 +97,10 @@ int rendu_page(const uint8_t *brut, size_t lignes, const struct rendu_options *o
     }
 
     /* À 600 dpi, une ligne brute vaut une demi-ligne à 300 ppp : les sauts
-     * doublent (22 lignes au recto, vérifié sur 1e-gris-600-recto ; 292 au verso,
-     * DÉDUIT : aucune capture de recto-verso à 600 dpi). */
+     * doublent (22 lignes au recto, vérifié sur 1e-gris-600-recto). Le verso à
+     * 600 dpi (292 lignes, colonnes 2 551 à 2) serait une DÉDUCTION sans capture :
+     * ds720d ne sait pas le scanner et convertir le refuse ; le calcul reste
+     * général pour le jour où une capture le montrera. */
     unsigned facteur = o->ppp_y == 600 ? 2u : 1u;
     size_t saut = (size_t)(o->verso ? SAUT_VERSO : SAUT_RECTO) * facteur;
     uint32_t points = o->ppp_y == 600 ? POINTS_600 : POINTS_300;
@@ -134,7 +136,7 @@ int rendu_page(const uint8_t *brut, size_t lignes, const struct rendu_options *o
                  * L'ordre du pilote n'est pas établi : moyenner les bruts puis
                  * appliquer la courbe ne changerait que les points intermédiaires
                  * aux bords des traits (la courbe est concave). L'écart moyen
-                 * mesuré contre son BMP, 2,2 niveaux, ne justifie pas d'aller
+                 * mesuré contre son BMP, 1,6 niveau, ne justifie pas d'aller
                  * plus loin (étape 4d). */
                 uint8_t suivant = rendu_courbe_gris[plan[colonne(k + 1, o->verso)]];
                 dst[(2 * k) * canaux + c] = v;

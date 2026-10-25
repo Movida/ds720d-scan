@@ -106,11 +106,14 @@ static const uint8_t set_window[89] = {
     0x64, 0x00, 0x64, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x0b, 0x01, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
-/* Étape 4e. SET WINDOW du recto-verso (1e-gris-300-recto-verso trame 2500), la
+/* Étape 4e, accord écrit de David du 25/10/2026 pour ce dépôt, le READ du
+ * recto-verso et la fenêtre du 600 dpi ci-dessous (CLAUDE.md).
+ * SET WINDOW du recto-verso (1e-gris-300-recto-verso trame 2500), la
  * fenêtre de 2a à cinq octets près (protocole.md §3 et §6) : longueur 17 340
  * unités au lieu de 16 800 (octets 38-39, 14,45 po : le verso, vu 0,45 po plus
  * tard, couvre encore 14 po), octets vendeur 7-8 à 0x21E0 au lieu de 0x1068
- * (8 672 = deux faces de 4 336 lignes, déduit) et octet vendeur 17 à 0x10, le
+ * (8 672, le double de 4 336, à une ligne près les 4 335 lignes de 14,45 po :
+ * le nombre de lignes des deux faces, déduit) et octet vendeur 17 à 0x10, le
  * bit qui demande le recto-verso (déduit, et confirmé par l'alternance des
  * blocs recto et verso qui suit dans la capture). */
 static const uint8_t set_window_rv[89] = {

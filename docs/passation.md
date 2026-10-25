@@ -1,4 +1,4 @@
-# Passation (mise à jour le 25/10/2026, fin de l'étape 3)
+# Passation (mise à jour le 25/10/2026, fin de l'étape 4)
 
 Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un pilote KMDF (voir [HISTORIQUE.md](../HISTORIQUE.md)). Les règles sont dans [CLAUDE.md](../CLAUDE.md).
 
@@ -23,7 +23,7 @@ Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un p
 | Client TWAIN de banc | `banc/twain_banc.py`, fait scanner le pilote Brother sans Capture Tool ; côté référence seulement |
 | Chaîne C | Build Tools Visual Studio 2022 (17.14), compilateur C x64 et Windows SDK 10.0.26100 ; `construire.cmd` les trouve par vswhere. WDK à installer par David avant l'étape 6 |
 | Pilote du scanner | **WinUSB** depuis l'étape 2 (classe USBDevice, nom « DS-720D »), posé par `out\bascule_winusb.exe --oui` ; F: et le logiciel Brother ne le voient plus. Retour à USBSTOR : [winusb.md](winusb.md) |
-| Programmes | `out\ds720d.exe` (`descripteurs`, `lun`, `inquiry`, `etat`, `papier`, `scan --sortie FICHIER.brut`), `out\convertir.exe` (brut vers PGM ou PNG, page rendue comme par le pilote Brother ou `--brut`) |
+| Programmes | `out\ds720d.exe` (`descripteurs`, `lun`, `inquiry`, `etat`, `papier`, `scan --sortie FICHIER.brut [--recto-verso | --ppp 600] [--feuilles N]`), `out\convertir.exe` (brut vers PGM ou PNG, page rendue comme par le pilote Brother ou `--brut`) |
 | Câble | Faux contacts possibles pendant un scan (25/10, capture `3e-scan`) : le scanner quitte le bus. Vérifier le câble avant de soupçonner le code |
 
 ## Voie retenue
@@ -61,7 +61,14 @@ Cadre légal : l'art. L122-6-1 IV du CPI autorise l'étude d'un logiciel pour l'
    - 3d. Commandes de lecture déposées dans le tunnel : présence du papier (0x08).
    - 3e. Scan complet d'une page (accord écrit de David pour les trois SEND vendeur) : même suite de commandes que 2a.
    - 3f. PGM et PNG écrits à la main (blocs deflate stockés, CRC-32 et Adler-32 faits main).
-4. Au-delà de la page gris 300 dpi, sur le même protocole : rendu (courbe de tons du pilote Brother, recadrage), recto-verso (fenêtre et READ différents dans `1e-gris-300-recto-verso`), 600 dpi (seule la résolution Y double). La couleur est déjà là. Comprendre les SEND 0x83, 0x95, 0x96 avant d'en changer une valeur.
+4. ✓ Rendu, recto-verso et 600 dpi (25/10), sur les captures existantes, sans nouvelle capture de référence :
+   - 4a. Recto-verso décodé hors ligne : blocs alternés recto et verso, verso en miroir et 135 lignes plus tard.
+   - 4b. 600 dpi reconstitué : 300 ppp en X, le pilote double la largeur par interpolation linéaire.
+   - 4c. Recadrage et courbe de tons du gris mesurés (loi de puissance, gamma 1,8 environ) ; la couleur du pilote dépend du document.
+   - 4d. Page rendue en C (`src/rendu.c`, `convertir.exe`), à moins de 2 niveaux en moyenne des BMP du pilote en gris.
+   - 4e. `ds720d scan --recto-verso --feuilles N` sur le scanner (accord écrit de David pour les nouvelles fenêtres et le READ).
+   - 4f. `ds720d scan --ppp 600` sur le scanner.
+   Restent ouverts : le rendu couleur du pilote, l'écart de 2a à la courbe, le recto-verso à 600 dpi (aucune capture), le sens des SEND 0x83, 0x95, 0x96 (à comprendre avant d'en changer une valeur).
 5. Préparation noyau (accord écrit de David) : VM avec passage USB, WinDbg, test-signing, point de restauration.
 6. Pilote KMDF : configuration, pipes bulk, URB, interface IOCTL vers un petit outil utilisateur, traces WPP.
 7. Outil final et retrait du logiciel Brother (feu vert de David).

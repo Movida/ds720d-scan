@@ -40,7 +40,7 @@ class Sorties:
 
     Sans recto-verso, tous les blocs vont bout à bout dans un seul fichier, comme
     avant. En recto-verso, le scanner alterne un bloc de la face avant et un bloc
-    de la face arrière, en commençant par l'avant (étape 4a, docs/protocole.md §5 :
+    de la face arrière, en commençant par l'avant (étape 4a, docs/protocole.md §6 :
     blocs pairs contre les BMP 1 et 3 du pilote, impairs contre 2 et 4, sur
     `1e-gris-300-recto-verso`). Rien dans la réponse « bloc prêt » ne dit la face
     (ses mots 1 et 2 valent 1 et 0 partout) : seul le rang du bloc dans la page la

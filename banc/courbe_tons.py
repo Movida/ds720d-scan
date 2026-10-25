@@ -15,16 +15,17 @@ suffit (écart faible) ou si le pilote corrige aussi selon la colonne (écart fo
 
 Usage :
   py banc/courbe_tons.py mesurer BRUT BMP --dx 4 --dy 11 [--miroir] [--colonnes-paires]
-                         [--plan 1] [--canal 0] [--table FICHIER.txt]
+                         [--plan 1] [--canal 0] > MESURE.txt
   py banc/courbe_tons.py combiner MESURE1.txt MESURE2.txt ...
   plan : 0 rouge, 1 vert, 2 bleu du brut ; canal : indice dans le BMP
   (gris : 0 ; couleur : 0 bleu, 1 vert, 2 rouge, ordre du BMP).
---table écrit la courbe (256 valeurs, une par ligne, « v médiane effectif ») ;
-le fichier ne contient que des nombres, il peut aller dans le dépôt.
+« combiner » relit ces sorties et rend la courbe complète de 256 valeurs
+(docs/courbe-gris.txt) ; elle ne contient que des nombres et va dans le dépôt.
 """
 
 import argparse
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -62,16 +63,30 @@ def quantile(histo, q):
 
 
 EFFECTIF_MINI = 1000  # en dessous, une médiane est trop sensible aux paires aberrantes
+DEBUT_AJUSTEMENT = 64  # plus petite valeur brute retenue pour ajuster la loi de puissance
+
+
+# Une ligne de « mesurer ». Pourquoi une expression régulière plutôt qu'un
+# découpage par blancs : les quartiles s'écrivent « 90- 94 » quand le second a
+# deux chiffres, ce qui changeait le nombre de champs ; à l'étape 4c, ces lignes
+# étaient écartées sans bruit (bruts 40 à 44 notamment, relecture de fond).
+LIGNE_MESURE = re.compile(r"^\s*(\d+)\s+médiane\s+(\d+)\s+quartiles\s+(\d+)\s*-\s*(\d+)\s+effectif\s+(\d+)\s*$")
 
 
 def lire_mesure(chemin):
-    """Relit la sortie de « mesurer » : {valeur brute: (médiane, effectif)}."""
+    """Relit la sortie de « mesurer » : {valeur brute: (médiane, effectif)}.
+    Toute ligne non vide qui n'a pas la forme attendue arrête le programme."""
     table = {}
     with open(chemin, encoding="utf-8") as f:
-        for ligne in f:
-            m = ligne.split()
-            if len(m) == 7 and m[1] == "médiane":
-                table[int(m[0])] = (int(m[2]), int(m[6]))
+        for numero, ligne in enumerate(f, 1):
+            if not ligne.strip():
+                continue
+            m = LIGNE_MESURE.match(ligne)
+            if not m:
+                raise SystemExit(f"{chemin}:{numero} : ligne inattendue : {ligne.strip()!r}")
+            table[int(m[1])] = (int(m[2]), int(m[5]))
+    if not table:
+        raise SystemExit(f"{chemin} : aucune mesure")
     return table
 
 
@@ -82,9 +97,9 @@ def combiner(chemins):
     pondérée par leurs effectifs (les scans gris s'accordent à ±1 près, étape 4c),
     à condition que l'effectif total atteigne EFFECTIF_MINI. Ailleurs (noirs
     profonds, et au-dessus du blanc du papier, que le scanner ne rend jamais
-    au-delà de 186 environ), on prolonge par une loi de puissance
+    au-delà de 177 environ), on prolonge par une loi de puissance
     255 · (v / 255) ^ g, dont g est ajusté par moindres carrés sur les logarithmes
-    des valeurs mesurées. Pourquoi cette forme : elle colle aux mesures à ±3 près
+    des valeurs mesurées. Pourquoi cette forme : elle colle aux mesures à 1,1 niveau près
     sur toute la plage mesurée (déduit à l'étape 4c), et elle fixe 0 → 0 et
     255 → 255 sans paramètre de plus. Pourquoi pas une extrapolation linéaire du
     dernier tronçon : elle dépasserait 255 avant v = 255 ou n'y arriverait pas,
@@ -103,7 +118,11 @@ def combiner(chemins):
                     break
     num = den = 0.0
     for v, (med, _) in mesure.items():
-        if 0 < v < 255 and 0 < med < 255:
+        # Ajustement sur les tons moyens et clairs seulement : la loi ne sert
+        # qu'à prolonger la mesure au-dessus du blanc du papier, et les noirs
+        # profonds (fond hors de la feuille, valeurs rendues très espacées)
+        # tirent l'exposant sans rien dire de cette région.
+        if DEBUT_AJUSTEMENT <= v < 255 and 0 < med < 255:
             x, y = math.log(v / 255), math.log(med / 255)
             num, den = num + x * y, den + x * x
     g = num / den
@@ -112,7 +131,14 @@ def combiner(chemins):
         if v in mesure:
             courbe.append((v, mesure[v][0], "mesuré", mesure[v][1]))
         else:
-            courbe.append((v, round(255 * (v / 255) ** g), "ajusté", 0))
+            # Une valeur ajustée ne descend jamais sous la précédente : au raccord
+            # avec la mesure (brut 177 → 209 mesuré, 178 → 208 ajusté), la loi
+            # passe un niveau sous la médiane, et une courbe de tons qui
+            # redescend inverserait deux gris voisins.
+            sortie = round(255 * (v / 255) ** g)
+            if courbe:
+                sortie = max(sortie, courbe[-1][1])
+            courbe.append((v, sortie, "ajusté", 0))
     return g, courbe
 
 
@@ -129,7 +155,6 @@ def main():
     a.add_argument("--plan", type=int, default=1, help="plan du brut (défaut : vert)")
     a.add_argument("--canal", type=int, default=0, help="canal du BMP (défaut : 0)")
     a.add_argument("--pas-y", type=int, default=1, help="une ligne sur N (plus rapide)")
-    a.add_argument("--table", help="fichier où écrire la courbe")
     c = sous.add_parser("combiner", help="fusionner des mesures en une courbe de 256 valeurs")
     c.add_argument("mesures", nargs="+", help="sorties de « mesurer »")
     args = ap.parse_args()
@@ -145,17 +170,11 @@ def main():
     brut, bmp = Brut(args.brut), Bmp(args.bmp)
     histos = mesurer(brut, bmp, args.dx, args.dy, args.miroir, args.colonnes_paires,
                      args.plan, args.canal, args.pas_y)
-    lignes = []
     for v, h in enumerate(histos):
         n = sum(h)
         if n:
             q1, med, q3 = quantile(h, .25), quantile(h, .5), quantile(h, .75)
-            lignes.append((v, med, n))
             print(f"{v:3}  médiane {med:3}  quartiles {q1:3}-{q3:3}  effectif {n}")
-    if args.table:
-        with open(args.table, "x", encoding="utf-8") as f:
-            for v, med, n in lignes:
-                f.write(f"{v} {med} {n}\n")
     return 0
 
 

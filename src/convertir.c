@@ -58,7 +58,7 @@ int main(int argc, char **argv)
         }
     }
     if (!brut || (!pgm == !png) || (o.couleur && !png) || (o.ppp_y != 300 && o.ppp_y != 600) ||
-        (o.verso && o.brut)) {
+        (o.verso && (o.brut || o.ppp_y == 600))) { /* verso à 600 dpi : jamais capturé (rendu.c) */
         usage();
         return 2;
     }

@@ -1,54 +1,54 @@
 # Courbe de tons du gris du pilote Brother : valeur brute (plan vert), valeur rendue, origine, effectif.
-# Étape 4c. Produit par : py banc/courbe_tons.py combiner sur les mesures de 1e-gris-300-recto-twain-3,
-# 1e-gris-300-recto-verso (4 faces) et 1e-gris-600-recto (docs/protocole.md §5). « ajusté » : hors plage mesurée,
-# prolongé par la loi de puissance ci-dessous.
-# loi de puissance ajustée : 255 * (v / 255) ^ 0.5544
-  0   0 ajusté 0
-  1  12 ajusté 0
-  2  17 ajusté 0
-  3  22 ajusté 0
-  4  25 ajusté 0
-  5  29 ajusté 0
-  6  32 ajusté 0
-  7  35 ajusté 0
-  8  37 ajusté 0
-  9  40 ajusté 0
- 10  42 ajusté 0
- 11  45 ajusté 0
- 12  47 ajusté 0
- 13  49 ajusté 0
- 14  51 ajusté 0
- 15  53 ajusté 0
- 16  55 ajusté 0
- 17  57 ajusté 0
- 18  59 ajusté 0
- 19  60 ajusté 0
- 20  62 ajusté 0
- 21  64 ajusté 0
- 22  66 ajusté 0
- 23  67 ajusté 0
- 24  69 ajusté 0
- 25  70 ajusté 0
- 26  72 ajusté 0
- 27  73 ajusté 0
- 28  75 ajusté 0
- 29  76 ajusté 0
- 30  78 ajusté 0
- 31  79 ajusté 0
- 32  81 ajusté 0
- 33  82 ajusté 0
- 34  83 ajusté 0
- 35  85 ajusté 0
- 36  86 ajusté 0
- 37  87 ajusté 0
- 38  89 ajusté 0
- 39  90 ajusté 0
- 40  91 ajusté 0
- 41  93 ajusté 0
- 42  94 ajusté 0
- 43  95 ajusté 0
- 44  96 ajusté 0
- 45  97 mesuré 2935
+# Étape 4c, corrigée à la relecture de fond. Produit par : py banc/courbe_tons.py combiner sur les mesures de
+# 1e-gris-300-recto-twain-3, 1e-gris-300-recto-verso (4 faces) et 1e-gris-600-recto (docs/protocole.md §5).
+# « ajusté » : au-dessus de la plage mesurée, prolongé par la loi de puissance ci-dessous, sans jamais redescendre.
+# loi de puissance ajustée : 255 * (v / 255) ^ 0.5536
+  0   0 mesuré 2902741
+  1  12 mesuré 1719052
+  2  17 mesuré 5065902
+  3  17 mesuré 2819573
+  4  22 mesuré 5981076
+  5  25 mesuré 2490039
+  6  29 mesuré 3272683
+  7  32 mesuré 1175248
+  8  35 mesuré 974922
+  9  35 mesuré 337252
+ 10  37 mesuré 220121
+ 11  42 mesuré 96119
+ 12  44 mesuré 73643
+ 13  47 mesuré 52838
+ 14  51 mesuré 47051
+ 15  53 mesuré 42050
+ 16  55 mesuré 38156
+ 17  57 mesuré 33803
+ 18  58 mesuré 29621
+ 19  60 mesuré 27849
+ 20  62 mesuré 25115
+ 21  64 mesuré 24531
+ 22  65 mesuré 21431
+ 23  67 mesuré 22437
+ 24  69 mesuré 18113
+ 25  70 mesuré 19130
+ 26  72 mesuré 17538
+ 27  73 mesuré 16718
+ 28  75 mesuré 17281
+ 29  76 mesuré 15302
+ 30  78 mesuré 15372
+ 31  79 mesuré 15682
+ 32  80 mesuré 14544
+ 33  82 mesuré 14811
+ 34  83 mesuré 13474
+ 35  85 mesuré 15130
+ 36  86 mesuré 12339
+ 37  87 mesuré 13849
+ 38  89 mesuré 12431
+ 39  90 mesuré 13166
+ 40  91 mesuré 12407
+ 41  92 mesuré 11645
+ 42  94 mesuré 12431
+ 43  95 mesuré 12057
+ 44  96 mesuré 11781
+ 45  97 mesuré 11423
  46  98 mesuré 11467
  47 100 mesuré 11526
  48 101 mesuré 11168
@@ -204,7 +204,7 @@
 198 222 ajusté 0
 199 222 ajusté 0
 200 223 ajusté 0
-201 223 ajusté 0
+201 224 ajusté 0
 202 224 ajusté 0
 203 225 ajusté 0
 204 225 ajusté 0
@@ -229,7 +229,7 @@
 223 237 ajusté 0
 224 237 ajusté 0
 225 238 ajusté 0
-226 238 ajusté 0
+226 239 ajusté 0
 227 239 ajusté 0
 228 240 ajusté 0
 229 240 ajusté 0

@@ -293,11 +293,17 @@ static const uint8_t depot_a0[10] = {0x28, 0x00, 0xa0, 0x00, 0x0a, 0x0d, 0x00, 0
  * Sans feuille, le pilote TWAIN attend qu'on en glisse une (1e-sans-papier) ;
  * nous, on s'arrête après la première réponse 00 00 et on le dit : attendre en
  * sondant le scanner serait une séquence qu'aucune capture ne montre.
+ *
+ * debut : 0 en temps normal ; 1 après attendre_feuille, dont le dernier 0x08,
+ * celui qui a rendu 01 00, tient lieu du premier : entre deux feuilles, le pilote
+ * enchaîne alors directement READ 0xA0, 0x08, READ 0xA0, 0x08, READ 0xA0, la
+ * signature relue avant chacun sauf le dernier (1e-gris-300-recto-verso, trames
+ * 148287 à 149085).
  * Renvoie 1 si une feuille est engagée, 0 sinon, -1 en cas d'erreur. */
-static int lire_papier(void)
+static int lire_papier(int debut)
 {
     uint8_t d[2];
-    for (int i = 0; i < 6; i++) {
+    for (int i = debut; i < 6; i++) {
         if (i < 5 && tunnel_signature() != 0)
             return -1;
         int papier = i % 2 == 0;
@@ -335,7 +341,8 @@ static const uint8_t depot_release[10] = {0x17};
 
 /* Étape 4. Fenêtre et READ du recto-verso (1e-gris-300-recto-verso, trames 2500
  * et 2811) et fenêtre du 600 dpi (1e-gris-600-recto trame 2718, dont le READ est
- * celui de 2a, trame 3033). Différences avec 2a : tunnel.c, protocole.md §3 et §6. */
+ * celui de 2a, trame 3033). Différences avec 2a : tunnel.c, protocole.md §3 et §6.
+ * Accord écrit de David du 25/10/2026 pour ces trois dépôts (CLAUDE.md). */
 static const uint8_t depot_fenetre_rv[89] = {
     0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x47,
     0x00, 0x00, 0x01, 0x2c, 0x01, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x80,
@@ -371,14 +378,17 @@ static const struct mode_scan mode_600 = {"recto 600 dpi (1e-gris-600-recto)", d
 #define ATTENTE_BLOC_MS 30000ULL
 #define TAILLE_LECTURE 65536u /* taille des lectures 0xC3 du pilote Brother (2a, 52325) */
 #define VOLUME_BLOC_MAX (16u << 20) /* garde-fou : 622 080 o dans toutes les captures */
-/* Garde-fou sur la page : 65 blocs au plus dans les captures (A4 à 600 dpi,
+/* Garde-fou sur la page : 70 blocs au plus dans les captures (une feuille en
+ * recto-verso, 1e-gris-300-recto-verso ; 65 pour l'A4 à 600 dpi de
  * 1e-gris-600-recto) ; 200 blocs, environ 124 Mo, protègent le disque d'un
  * scanner qui annoncerait des blocs sans fin. */
 #define BLOCS_MAX 200
 
 /* Ctrl+C pendant un scan : au lieu de tuer le programme, qui laisserait l'unité
  * réservée et la feuille engagée, on lève ce drapeau ; la boucle de lecture
- * s'arrête au tour suivant et RELEASE UNIT part comme après une erreur. */
+ * s'arrête au tour suivant et RELEASE UNIT part comme après une erreur. Il vaut
+ * aussi pendant l'attente de la feuille suivante, pour ne pas couper le
+ * programme au milieu d'un échange par le tunnel. */
 static volatile LONG interrompu;
 
 static BOOL WINAPI sur_ctrl_c(DWORD evenement)
@@ -451,6 +461,10 @@ static long long lire_page(FILE *faces[2], const struct mode_scan *m)
             return -1;
         depuis = GetTickCount64();
     }
+    if (blocs == 0) {
+        fprintf(stderr, "fin de page sans aucun bloc d'image : jamais observé\n");
+        return -1;
+    }
     if (m->recto_verso && blocs % 2) {
         /* 70 blocs par feuille, 35 par face, dans 1e-gris-300-recto-verso. */
         fprintf(stderr, "recto-verso : %d blocs, nombre impair jamais observé\n", blocs);
@@ -479,11 +493,12 @@ static long long lire_page(FILE *faces[2], const struct mode_scan *m)
  * RELEASE sans réservation, et c'est la commande que le pilote Brother envoie
  * pour finir. Ctrl+C passe par le même chemin (sur_ctrl_c).
  *
- * faces[0] reçoit le recto, faces[1] le verso en recto-verso. Renvoie le
- * nombre d'octets lus, 0 s'il n'y a pas de feuille, -1 en cas d'erreur. */
-static long long scanner_feuille(FILE *faces[2], const struct mode_scan *m)
+ * faces[0] reçoit le recto, faces[1] le verso en recto-verso. debut : voir
+ * lire_papier. Renvoie le nombre d'octets lus, 0 s'il n'y a pas de feuille, -1
+ * en cas d'erreur. */
+static long long scanner_feuille(FILE *faces[2], const struct mode_scan *m, int debut)
 {
-    int r = lire_papier();
+    int r = lire_papier(debut);
     if (r == 0) {
         fprintf(stderr, "pas de feuille dans le chargeur\n");
         return 0;
@@ -496,13 +511,11 @@ static long long scanner_feuille(FILE *faces[2], const struct mode_scan *m)
         return -1;
     /* RESERVE UNIT (trame 2177), SCAN (2276), lecture, RELEASE (120248). RELEASE
      * part dès que RESERVE a été tenté, même si son statut n'a pas été lu. */
-    SetConsoleCtrlHandler(sur_ctrl_c, TRUE);
     long long total = -1;
     if (tunnel_commande(depot_reserve, sizeof depot_reserve, NULL, 0) == 0 &&
         tunnel_commande(depot_scan, sizeof depot_scan, NULL, 0) == 0)
         total = lire_page(faces, m);
     int liberee = tunnel_commande(depot_release, sizeof depot_release, NULL, 0) == 0;
-    SetConsoleCtrlHandler(sur_ctrl_c, FALSE);
     if (!liberee) {
         fprintf(stderr, "RELEASE UNIT a échoué : débrancher et rebrancher le scanner\n");
         return -1;
@@ -511,10 +524,11 @@ static long long scanner_feuille(FILE *faces[2], const struct mode_scan *m)
 }
 
 /* Attente de la feuille suivante, comme le pilote TWAIN entre deux feuilles
- * (1e-gris-300-recto-verso, trames 122627 à 148287) : le dépôt 0x08, une fois
- * par seconde, jusqu'à la réponse 01 00 (feuille engagée). Le pilote y a
- * attendu 28 s ; on abandonne après ATTENTE_FEUILLE_S. Renvoie 1 si une
- * feuille est arrivée, 0 sinon, -1 en cas d'erreur. */
+ * (1e-gris-300-recto-verso, trames 122627 à 148287) : une fois par seconde, la
+ * signature puis le dépôt 0x08 (trames 148250 et 148287), jusqu'à la réponse
+ * 01 00 (feuille engagée). Le pilote y a attendu 28 s ; on abandonne après
+ * ATTENTE_FEUILLE_S. Renvoie 1 si une feuille est arrivée, 0 sinon (ou sur
+ * Ctrl+C), -1 en cas d'erreur. */
 #define ATTENTE_FEUILLE_S 60
 static int attendre_feuille(void)
 {
@@ -523,7 +537,7 @@ static int attendre_feuille(void)
     for (int s = 0; s < ATTENTE_FEUILLE_S && !interrompu; s++) {
         uint8_t d[2];
         Sleep(1000); /* intervalle du pilote : 1,0 s entre les trames 122627, 123538 et 124457 */
-        if (tunnel_commande(depot_papier, sizeof depot_papier, d, sizeof d) != 0)
+        if (tunnel_signature() != 0 || tunnel_commande(depot_papier, sizeof depot_papier, d, sizeof d) != 0)
             return -1;
         if (d[0] == 0x01 && d[1] == 0x00)
             return 1;
@@ -550,10 +564,15 @@ static FILE *creer_face(const char *sortie, int feuille, int feuilles, int recto
         sprintf_s(p, sizeof p, "-p%d", feuille);
     if (recto_verso)
         strcpy_s(f, sizeof f, verso ? "-verso" : "-recto");
+    /* Longueur contrôlée avant d'écrire : sprintf_s et strcpy_s arrêtent le
+     * programme sur un tampon trop court, au lieu de rendre une erreur. main
+     * refuse déjà un nom trop long avant tout échange avec le scanner. */
+    if (base + strlen(p) + strlen(f) + 6 > lg)
+        return NULL;
     if (feuilles == 1 && !recto_verso)
         strcpy_s(nom, lg, sortie);
-    else if (sprintf_s(nom, lg, "%.*s%s%s.brut", (int)base, sortie, p, f) < 0)
-        return NULL;
+    else
+        sprintf_s(nom, lg, "%.*s%s%s.brut", (int)base, sortie, p, f);
     int fd;
     if (_sopen_s(&fd, nom, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _SH_DENYWR, _S_IREAD | _S_IWRITE) != 0) {
         fprintf(stderr, "impossible de créer %s (existe-t-il déjà ?)\n", nom);
@@ -566,46 +585,56 @@ static FILE *creer_face(const char *sortie, int feuille, int feuilles, int recto
 }
 
 /* Scan de une à plusieurs feuilles dans le mode choisi. Entre deux feuilles, on
- * attend la suivante comme le pilote TWAIN, puis toute la séquence repart :
- * présence du papier, réglages, RESERVE, SCAN… (1e-gris-300-recto-verso, de la
- * trame 148287 à 149859, la même suite que pour la première feuille). */
+ * attend la suivante comme le pilote TWAIN, puis la séquence repart : présence
+ * du papier, réglages, RESERVE, SCAN… (1e-gris-300-recto-verso, trames 148287 à
+ * 149859 : la suite de la première feuille, le premier 0x08 en moins). */
 static int scanner_feuilles(const char *sortie, const struct mode_scan *m, int feuilles)
 {
     trace_note("scan : %s, %d feuille(s)", m->nom, feuilles);
-    for (int feuille = 1; feuille <= feuilles; feuille++) {
+    SetConsoleCtrlHandler(sur_ctrl_c, TRUE);
+    int r = 0;
+    for (int feuille = 1; feuille <= feuilles && r == 0; feuille++) {
         if (feuille > 1) {
-            int r = attendre_feuille();
-            if (r <= 0) {
-                if (r == 0)
-                    fprintf(stderr, "pas de feuille %d : arrêt après %d feuille(s)\n", feuille, feuille - 1);
-                return r == 0 && feuille > 1 ? 0 : -1;
+            int arrivee = attendre_feuille();
+            if (arrivee == 0)
+                fprintf(stderr, "pas de feuille %d : arrêt après %d feuille(s)\n", feuille, feuille - 1);
+            if (arrivee <= 0) {
+                r = arrivee == 0 ? 0 : -1;
+                break;
             }
         }
         char noms[2][MAX_PATH];
         FILE *faces[2] = {NULL, NULL};
+        long long tailles[2] = {0, 0};
         int nfaces = m->recto_verso ? 2 : 1, ok = 1;
         for (int i = 0; i < nfaces && ok; i++)
             ok = (faces[i] = creer_face(sortie, feuille, feuilles, m->recto_verso, i, noms[i], MAX_PATH)) != NULL;
-        long long total = ok ? scanner_feuille(faces, m) : -1;
-        for (int i = 0; i < nfaces; i++)
-            if (faces[i] && fclose(faces[i]) != 0)
+        long long total = ok ? scanner_feuille(faces, m, feuille > 1) : -1;
+        for (int i = 0; i < nfaces; i++) {
+            if (!faces[i])
+                continue;
+            tailles[i] = _ftelli64(faces[i]);
+            if (fclose(faces[i]) != 0)
                 total = -1;
+        }
         if (total <= 0) {
             for (int i = 0; i < nfaces; i++) {
                 if (!faces[i])
                     continue;
-                if (total == 0)
+                if (tailles[i] == 0)
                     remove(noms[i]); /* rien n'a été écrit : le nom reste libre pour un nouvel essai */
                 else
-                    fprintf(stderr, "%s : image incomplète ou absente, à ne pas convertir telle quelle\n", noms[i]);
+                    fprintf(stderr, "%s : image incomplète, à ne pas convertir telle quelle\n", noms[i]);
             }
-            return -1;
+            r = -1;
+            break;
         }
         for (int i = 0; i < nfaces; i++)
             printf("%s : %lld lignes de 3 × 2592 points%s\n", noms[i], total / nfaces / 7776,
                    m->recto_verso ? (i ? " (verso, en miroir : convertir --verso)" : " (recto)") : "");
     }
-    return 0;
+    SetConsoleCtrlHandler(sur_ctrl_c, FALSE);
+    return r;
 }
 
 static void usage(void)
@@ -658,6 +687,12 @@ int main(int argc, char **argv)
     if ((ppp != 300 && ppp != 600) || (recto_verso && ppp == 600) || feuilles < 1 || feuilles > 50 ||
         (niveau != 6 && (recto_verso || ppp != 300 || feuilles != 1)))
         niveau = 0;
+    /* Le plus long nom de face, « -p50-verso.brut » ajouté, doit tenir dans
+     * MAX_PATH : on le vérifie ici, avant de parler au scanner (creer_face). */
+    if (niveau == 6 && strlen(sortie) + sizeof "-p50-verso.brut" > MAX_PATH) {
+        fprintf(stderr, "nom de sortie trop long\n");
+        return 2;
+    }
     const struct mode_scan *mode = recto_verso ? &mode_rv : ppp == 600 ? &mode_600 : &mode_recto;
     if (!niveau) {
         usage();
@@ -684,7 +719,7 @@ int main(int argc, char **argv)
     if (r == 0 && niveau == 6)
         r = scanner_feuilles(sortie, mode, feuilles);
     if (r == 0 && niveau == 5) {
-        int papier = lire_papier();
+        int papier = lire_papier(0);
         if (papier >= 0)
             printf("%s\n", papier ? "feuille engagée" : "pas de feuille");
         r = papier < 0 ? -1 : 0;
