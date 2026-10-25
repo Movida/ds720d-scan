@@ -1,4 +1,4 @@
-# Passation (mise à jour le 25/10/2026, fin de l'étape 4)
+# Passation (mise à jour le 25/10/2026, étape 5 en cours)
 
 Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un pilote KMDF (voir [HISTORIQUE.md](../HISTORIQUE.md)). Les règles sont dans [CLAUDE.md](../CLAUDE.md).
 
@@ -21,7 +21,7 @@ Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un p
 | Python | 3.14.7, pour le banc de test |
 | Tâche planifiée `ds720d-capture` | Lance USBPcapCMD en admin pour Claude, depuis `C:\ProgramData\ds720d\` (voir [captures.md](captures.md)) |
 | Client TWAIN de banc | `banc/twain_banc.py`, fait scanner le pilote Brother sans Capture Tool ; côté référence seulement |
-| Chaîne C | Build Tools Visual Studio 2022 (17.14), compilateur C x64 et Windows SDK 10.0.26100 ; `construire.cmd` les trouve par vswhere. WDK à installer par David avant l'étape 6 |
+| Chaîne C | Build Tools Visual Studio 2022 (17.14), compilateur C x64 et Windows SDK 10.0.26100 ; `construire.cmd` les trouve par vswhere. WDK 10.0.26100 à installer par David en 5b ([noyau.md](noyau.md)) |
 | Pilote du scanner | **WinUSB** depuis l'étape 2 (classe USBDevice, nom « DS-720D »), posé par `out\bascule_winusb.exe --oui` ; F: et le logiciel Brother ne le voient plus. Retour à USBSTOR : [winusb.md](winusb.md) |
 | Programmes | `out\ds720d.exe` (`descripteurs`, `lun`, `inquiry`, `etat`, `papier`, `scan --sortie FICHIER.brut [--recto-verso | --ppp 600] [--feuilles N]`), `out\convertir.exe` (brut vers PGM ou PNG, page rendue comme par le pilote Brother ou `--brut`) |
 | Câble | Faux contacts possibles pendant un scan (25/10, capture `3e-scan`) : le scanner quitte le bus. Vérifier le câble avant de soupçonner le code |
@@ -69,7 +69,14 @@ Cadre légal : l'art. L122-6-1 IV du CPI autorise l'étude d'un logiciel pour l'
    - 4e. `ds720d scan --recto-verso --feuilles N` sur le scanner (accord écrit de David pour les nouvelles fenêtres et le READ).
    - 4f. `ds720d scan --ppp 600` sur le scanner.
    Restent ouverts : le rendu couleur du pilote, l'écart de 2a à la courbe, le recto-verso à 600 dpi (aucune capture), le sens des SEND 0x83, 0x95, 0x96 (à comprendre avant d'en changer une valeur).
-5. Préparation noyau (accord écrit de David) : VM avec passage USB, WinDbg, test-signing, point de restauration.
+5. Préparation noyau (accord écrit de David), plan et choix dans [noyau.md](noyau.md) : le pilote ne se charge que dans une VM VMware Workstation Pro, Medabot reste intact (ni bcdedit, ni Secure Boot, ni HVCI) :
+   - 5a. Plan et docs du banc noyau.
+   - 5b. Point de restauration de Medabot ; installation par David de VMware Workstation Pro, WinDbg, WDK 10.0.26100 et Debugging Tools.
+   - 5c. VM Windows 11 Enterprise Évaluation, Secure Boot de la VM coupé, instantané.
+   - 5d. Scanner passé à la VM (montage automatique coupé avant), WinUSB, `ds720d` rejoué dans la VM et comparé à la référence.
+   - 5e. Débogage noyau KDNET depuis WinDbg sur Medabot.
+   - 5f. Test-signing dans la VM et pilote minimal fait main chargé, `DbgPrint` lu dans WinDbg.
+   - 5g. Relecture de fond.
 6. Pilote KMDF : configuration, pipes bulk, URB, interface IOCTL vers un petit outil utilisateur, traces WPP.
 7. Outil final et retrait du logiciel Brother (feu vert de David).
 
