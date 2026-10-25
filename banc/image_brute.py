@@ -55,6 +55,16 @@ class Brut:
         return self.octets[y * OCTETS_LIGNE + p * LARGEUR + x]
 
 
+class BrutMiroir(Brut):
+    """Le même brut lu de droite à gauche. La face arrière du recto-verso arrive
+    en miroir horizontal (étape 4a : brute, elle corrèle à -0,63 avec le BMP du
+    pilote, retournée à 0,994) ; un capteur qui regarde l'autre face de la feuille
+    la voit à l'envers de gauche à droite, mais dans le même sens de défilement."""
+
+    def point(self, x, y, p):
+        return super().point(LARGEUR - 1 - x, y, p)
+
+
 def ecrire_bmp(brut, chemin, gris):
     """BMP Windows (BITMAPINFOHEADER, non compressé). Lignes de bas en haut,
     chacune bourrée à un multiple de 4 octets ; en 24 bits, l'ordre est B, V, R.
@@ -114,11 +124,13 @@ def correlation(a, b):
     return sum((x - ma) * (y - mb) for x, y in zip(a, b)) / (sa * sb) if sa and sb else 0.0
 
 
-def comparer(brut, bmp, echantillon=4000):
+def comparer(brut, bmp, echantillon=4000, dy_max=63):
     """Cherche (dx, dy) tel que BMP(x, y) ≈ brut(x + dx, y + dy), plan vert contre
     canal vert (ou gris), sur des points tirés au hasard (graine fixe : résultat
-    reproductible), puis corrèle chaque plan avec chaque canal à ce décalage."""
-    marge = 64
+    reproductible), puis corrèle chaque plan avec chaque canal à ce décalage.
+    dy_max borne la recherche verticale : 63 suffit au recto (dy = 11), le verso
+    arrive 135 lignes plus tard (dy = 146, étape 4a) et demande 160."""
+    marge = dy_max + 1
     hauteur = min(brut.lignes, bmp.hauteur) - marge
     if bmp.largeur > LARGEUR or hauteur <= marge:
         raise SystemExit("images trop petites ou incompatibles")
@@ -159,15 +171,17 @@ def main():
     c = sous.add_parser("comparer", help="aligner et corréler avec le BMP du pilote Brother")
     c.add_argument("brut")
     c.add_argument("reference")
+    c.add_argument("--miroir", action="store_true", help="brut lu en miroir (face arrière)")
+    c.add_argument("--dy-max", type=int, default=63, help="décalage vertical maximal cherché")
     args = ap.parse_args()
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    brut = Brut(args.brut)
+    brut = BrutMiroir(args.brut) if getattr(args, "miroir", False) else Brut(args.brut)
     if args.action == "bmp":
         ecrire_bmp(brut, args.sortie, args.gris)
         print(f"{args.sortie} : {LARGEUR} × {brut.lignes}, {'gris' if args.gris else 'couleur'}")
     else:
-        comparer(brut, Bmp(args.reference))
+        comparer(brut, Bmp(args.reference), dy_max=args.dy_max)
     return 0
 
 

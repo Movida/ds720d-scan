@@ -133,7 +133,19 @@ Le sens de 2 592 et 240 est établi à l'étape 3b (section suivante) : 240 plan
 - `out\convertir.exe` (étape 3f) écrit cette image brute en PGM (plan vert) ou en PNG gris ou couleur, sans recadrage ni courbe de tons : elle reste donc sombre.
 - À 600 dpi, la fenêtre ne double que la résolution Y : le scanner rend toujours 2 592 points par ligne, mais deux fois plus de lignes (65 blocs, 5 200 lignes). La largeur de 5 100 du BMP TWAIN est donc interpolée sur le PC (déduit).
 
-## 6. Questions ouvertes
+## 6. Recto-verso (étape 4a)
+
+Établi sur `1e-gris-300-recto-verso` (adresse 15, deux feuilles, quatre BMP du pilote TWAIN), avec `banc/extrait_image.py --recto-verso` et `banc/image_brute.py comparer --miroir`.
+
+- **Commandes** : même suite que 2a pour chaque feuille (0x08 et READ 0xA0, trois SEND, SET WINDOW, RESERVE UNIT, SCAN, boucle de READ image, RELEASE UNIT), avec trois différences, toutes dans des dépôts observés : longueur de fenêtre 17 340 (14,45 po), octets vendeur 7-8 à 0x21E0 et 17 à 0x10 (trame 2500), READ image de 1 990 656 o (`28 00 00 00 0a 0d 1e 60 00 00`, trame 2811). Entre les deux feuilles, le pilote sonde 0x08 (`00 00`) jusqu'à la feuille suivante (`01 00`, trame 148346), puis rejoue toute la suite (trames 148455 à 149859).
+- **Blocs** : 70 blocs par feuille, annoncés **par paires** : deux réponses « prêt » d'affilée, puis des tours « pas prêt » (trames 70212, 70446, puis 70676). Les mots 1 et 2 de la réponse valent 1 et 0 pour tous les blocs : **rien n'y dit la face**.
+- **Face** : vérifié par l'image, les blocs de rang pair dans la page (0, 2, 4…) sont le **recto**, les impairs le **verso**. Recollés séparément, les pairs corrèlent à 0,996 et 0,997 avec les BMP 1 et 3, les impairs à 0,998 avec les BMP 2 et 4.
+- **Miroir** : le verso arrive en miroir horizontal. Brut, il corrèle à -0,63 avec son BMP ; lu de droite à gauche, à 0,998. Un second capteur qui regarde l'autre face de la feuille la voit retournée de gauche à droite, mais défile dans le même sens (déduit). Pas de miroir vertical : le seul retournement horizontal donne déjà 0,998 (vérifié).
+- **Décalages** : recto, BMP(x, y) = brut(x + 4, y + 11), comme en recto seul ; verso, BMP(x, y) = brut_miroir(x + 40, y + 146), soit les colonnes brutes 4 à 2 551 retournées : la même marge de 4 points, de l'autre côté. Identiques sur les deux feuilles.
+- **Retard du verso** : 146 − 11 = 135 lignes, 0,45 po à 300 ppp. C'est exactement l'allongement de la fenêtre (14,45 po au lieu de 14) : le pilote scanne 0,45 po de plus pour que le verso, vu plus tard, couvre encore 14 po (déduit). L'écart entre les deux capteurs le long du trajet du papier serait donc de 0,45 po, environ 11 mm (déduit).
+- Chaque face fait 35 blocs, 2 800 lignes (9,33 po) : la feuille était plus courte que la fenêtre ; le pilote complète jusqu'à 4 200 lignes avec son fond sombre, comme en recto.
+
+## 7. Questions ouvertes
 
 - Effet des SEND 0x83, 0x95, 0x96 : réglage en mémoire vive ou non volatile ? Capture Tool et TWAIN y envoient des valeurs différentes, chacun à chaque scan.
 - Rôle de 0x08 et des READ 0xA0, 0xA1 (16 o, l'interrogation de fond de Button Manager) et 0x69 (128 o, porte le numéro de série).

@@ -16,6 +16,8 @@ pcap et de l'en-tête USBPcap de l'analyseur, déjà contre-vérifiée par tshar
 
 Usage :
   py banc/extrait_image.py CAPTURE.pcap --adresse 15 SORTIE.brut
+  py banc/extrait_image.py CAPTURE.pcap --adresse 15 SORTIE.brut --recto-verso
+      (un fichier par page et par face : SORTIE-p1-recto.brut, SORTIE-p1-verso.brut…)
 Code de sortie : 0 si chaque bloc a été lu en entier depuis l'adresse annoncée.
 """
 
@@ -30,15 +32,53 @@ from analyse_capture import (CBW, OP_LECTURE_TAMPON, OP_TUNNEL, TRANSFERT_BULK, 
 
 SELECTEUR_BLOC = b"\x02\x02\x02"  # réponse « bloc d'image », docs/protocole.md §2
 ETAT_PRET = 1
+ETAT_FIN_PAGE = 3
 
 
-def extraire(chemin, adresse, sortie):
-    """Écrit les blocs dans sortie et renvoie la liste (adresse, volume annoncé,
-    volume lu, écarts) de chaque bloc."""
+class Sorties:
+    """Choisit le fichier où va chaque bloc.
+
+    Sans recto-verso, tous les blocs vont bout à bout dans un seul fichier, comme
+    avant. En recto-verso, le scanner alterne un bloc de la face avant et un bloc
+    de la face arrière, en commençant par l'avant (étape 4a, docs/protocole.md §5 :
+    blocs pairs contre les BMP 1 et 3 du pilote, impairs contre 2 et 4, sur
+    `1e-gris-300-recto-verso`). Rien dans la réponse « bloc prêt » ne dit la face
+    (ses mots 1 et 2 valent 1 et 0 partout) : seul le rang du bloc dans la page la
+    donne. On écrit donc un fichier par page et par face, NOM-pN-recto.brut et
+    NOM-pN-verso.brut, avec les octets tels que le scanner les envoie : le verso
+    reste vu en miroir, le redresser relève du rendu (étape 4c), pas de l'extraction."""
+
+    def __init__(self, chemin, recto_verso):
+        self.chemin = Path(chemin)
+        self.recto_verso = recto_verso
+        self.fichiers = {}
+        self.noms = []
+
+    def fichier(self, page, rang):
+        cle = (page, rang % 2) if self.recto_verso else None
+        if cle not in self.fichiers:
+            if self.recto_verso:
+                nom = self.chemin.with_name(
+                    f"{self.chemin.stem}-p{page + 1}-{'verso' if rang % 2 else 'recto'}{self.chemin.suffix}")
+            else:
+                nom = self.chemin
+            self.fichiers[cle] = open(nom, "xb")  # « x » : ne jamais écraser une extraction
+            self.noms.append(str(nom))
+        return self.fichiers[cle]
+
+    def fermer(self):
+        for f in self.fichiers.values():
+            f.close()
+
+
+def extraire(chemin, adresse, sorties):
+    """Écrit les blocs dans les fichiers de sorties et renvoie la liste (adresse,
+    volume annoncé, volume lu, écarts, page, rang dans la page) de chaque bloc."""
     blocs = []
     cdb_en_cours = None   # CDB du dernier CBW de l'appareil
-    bloc = None           # [adresse annoncée, volume annoncé, octets lus, prochaine adresse, écarts]
+    bloc = None           # [adresse annoncée, volume annoncé, octets lus, prochaine adresse, écarts, page, rang]
     lecture = None        # adresse de la lecture 0xC3 en cours
+    page, rang = 0, 0     # page courante (l'état « fin de page » la fait avancer), rang du prochain bloc
     for trame in lire_pcap(chemin):
         p = decoder_usbpcap(trame)
         if p is None or p.adresse != adresse or p.transfert != TRANSFERT_BULK:
@@ -60,11 +100,14 @@ def extraire(chemin, adresse, sortie):
             if etat == ETAT_PRET:
                 if bloc:
                     blocs.append(bloc)
-                bloc = [adr, a * b, 0, adr, 0]
+                bloc = [adr, a * b, 0, adr, 0, page, rang]
+                rang += 1
+            elif etat == ETAT_FIN_PAGE and rang:
+                page, rang = page + 1, 0
         elif cdb_en_cours and cdb_en_cours[0] == OP_LECTURE_TAMPON and bloc and lecture is not None:
             if lecture != bloc[3]:
                 bloc[4] += 1
-            sortie.write(d)
+            sorties.fichier(bloc[5], bloc[6]).write(d)
             bloc[2] += len(d)
             bloc[3] = lecture + len(d)
             lecture = None
@@ -78,19 +121,31 @@ def main():
     ap.add_argument("capture")
     ap.add_argument("--adresse", type=int, required=True)
     ap.add_argument("sortie", help="fichier brut à écrire (hors du dépôt)")
+    ap.add_argument("--recto-verso", action="store_true",
+                    help="un fichier par page et par face (NOM-pN-recto/verso)")
     args = ap.parse_args()
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    with open(args.sortie, "xb") as f:  # « x » : ne jamais écraser une extraction
-        blocs = extraire(args.capture, args.adresse, f)
+    sorties = Sorties(args.sortie, args.recto_verso)
+    try:
+        blocs = extraire(args.capture, args.adresse, sorties)
+    finally:
+        sorties.fermer()
     total = sum(b[2] for b in blocs)
     defauts = 0
-    for i, (adr, annonce, lu, _, ecarts) in enumerate(blocs):
+    for i, (adr, annonce, lu, _, ecarts, page, rang) in enumerate(blocs):
         ok = lu == annonce and not ecarts
         defauts += not ok
-        print(f"bloc {i:3}  adresse 0x{adr:08X}  annoncé {annonce:>7} o  lu {lu:>7} o"
+        face = f"  page {page + 1} {'verso' if rang % 2 else 'recto'}" if args.recto_verso else ""
+        print(f"bloc {i:3}  adresse 0x{adr:08X}  annoncé {annonce:>7} o  lu {lu:>7} o{face}"
               f"{'' if ok else '  !! incomplet ou discontinu'}")
-    print(f"# {len(blocs)} blocs, {total} o écrits dans {args.sortie}, {defauts} défaut(s)")
+    if args.recto_verso:
+        for page in sorted({b[5] for b in blocs}):
+            n = sum(1 for b in blocs if b[5] == page)
+            if n % 2:  # chaque page porte autant de blocs recto que verso
+                defauts += 1
+                print(f"!! page {page + 1} : {n} blocs, nombre impair en recto-verso")
+    print(f"# {len(blocs)} blocs, {total} o écrits dans {', '.join(sorties.noms)}, {defauts} défaut(s)")
     return 0 if defauts == 0 and blocs else 1
 
 
