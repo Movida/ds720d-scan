@@ -21,6 +21,8 @@ Le pilote Brother n'emploie que deux opcodes, 0xC5 et 0xC3, du groupe 6 réserv�
 
 Toutes les commandes de toutes les captures finissent en statut CSW 0.
 
+**Résidu collé** (relecture de l'étape 3) : sous USBSTOR, des CSW 0xC5 à statut 0 annoncent `résidu=168` sur des lectures de 4 ou 16 o, entièrement reçues (1b : 226 fois, 1c : 6, `1e-gris-300-recto` : 827). C'est le résidu du MODE SENSE(6) de 192 o de Windows, qui n'en reçoit que 24 (`1e-gris-300-recto`, trame 14648) ; la commande 0xC5 suivante le répète (trame 14906). Le micrologiciel ne remet donc pas le résidu à zéro pour 0xC5 (déduit). Sous WinUSB, notre code n'envoie pas de MODE SENSE et n'a vu que des résidus nuls (2a, `3e-scan-2`). Un tel CSW, au résidu supérieur à la longueur demandée, n'est pas « significatif » selon BOT §6.3.2 : `src/bot.c` ferait une Reset Recovery. Choix gardé tant qu'aucune de nos commandes ne laisse de résidu.
+
 ## 2. 0xC5, un tunnel
 
 ### Sélecteurs
@@ -67,7 +69,7 @@ Le premier octet de chaque dépôt est un opcode de la table 277 (commandes des 
 | 969, 1291, 1602 | READ type 0xA0 (vendeur), qualificatif 0x0A0D, 2 o | rend `01 00` |
 | 1755 | SEND type 0x95 (vendeur), qualificatif 0x0001, 2 o : `00 00` | effet inconnu |
 | 1859 | SEND type 0x96 (vendeur), qualificatif 0x0001, 2 o : `00 00` | effet inconnu |
-| 1961 | SEND type 0x83 (vendeur), 18 o : `04 00 00 00 00 00` trois fois | effet inconnu ; trois groupes, un par canal R, V, B (déduit) |
+| 1961 | SEND type 0x83 (vendeur), 18 o : neuf mots de 16 bits gros-boutistes, 0x0400 aux positions 0, 4 et 8, 0 ailleurs | effet inconnu ; une matrice 3 × 3 diagonale, matrice de couleur identité avec 0x0400 pour 1 (déduit) |
 | 2067 | SET WINDOW, 79 o de paramètres | ci-dessous |
 | 2179 | RESERVE UNIT (§10.2.10) | |
 | 2278 | SCAN (§15.2.5), liste de fenêtres de 0 o, contrôle 0x80 | bits 7-6 du contrôle réservés au fabricant (§7.2.7) |

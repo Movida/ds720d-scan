@@ -3,7 +3,7 @@
  *
  * Usage :
  *   convertir BRUT --pgm SORTIE.pgm
- *   convertir BRUT --png SORTIE.png [--couleur]
+ *   convertir BRUT --png SORTIE.png [--couleur] [--ppp-y 600]
  *
  * Pourquoi un programme à part plutôt qu'une option de ds720d.exe : la
  * conversion ne parle pas au scanner, elle se rejoue autant qu'on veut sur une
@@ -23,7 +23,7 @@
 static void usage(void)
 {
     fprintf(stderr, "usage : convertir BRUT --pgm SORTIE.pgm\n"
-                    "        convertir BRUT --png SORTIE.png [--couleur]\n");
+                    "        convertir BRUT --png SORTIE.png [--couleur] [--ppp-y 600]\n");
 }
 
 int main(int argc, char **argv)
@@ -31,6 +31,7 @@ int main(int argc, char **argv)
     SetConsoleOutputCP(CP_UTF8);
     const char *brut = NULL, *pgm = NULL, *png = NULL;
     int couleur = 0;
+    unsigned ppp_y = 300; /* résolution Y de la fenêtre : 300, ou 600 (1e-gris-600-recto) */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--pgm") == 0 && i + 1 < argc)
             pgm = argv[++i];
@@ -38,6 +39,8 @@ int main(int argc, char **argv)
             png = argv[++i];
         else if (strcmp(argv[i], "--couleur") == 0)
             couleur = 1;
+        else if (strcmp(argv[i], "--ppp-y") == 0 && i + 1 < argc)
+            ppp_y = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!brut)
             brut = argv[i];
         else {
@@ -45,7 +48,7 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    if (!brut || (!pgm == !png) || (couleur && !png)) {
+    if (!brut || (!pgm == !png) || (couleur && !png) || (ppp_y != 300 && ppp_y != 600)) {
         usage();
         return 2;
     }
@@ -76,7 +79,7 @@ int main(int argc, char **argv)
     fclose(f);
     size_t lignes = (size_t)(taille / IMAGE_OCTETS_LIGNE);
 
-    int r = pgm ? image_pgm(pgm, octets, lignes) : image_png(png, octets, lignes, couleur);
+    int r = pgm ? image_pgm(pgm, octets, lignes) : image_png(png, octets, lignes, couleur, ppp_y);
     free(octets);
     if (r != 0) {
         fprintf(stderr, "écriture de %s impossible (existe-t-il déjà ?)\n", pgm ? pgm : png);

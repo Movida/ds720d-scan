@@ -59,7 +59,7 @@ def ecrire_bmp(brut, chemin, gris):
     """BMP Windows (BITMAPINFOHEADER, non compressé). Lignes de bas en haut,
     chacune bourrée à un multiple de 4 octets ; en 24 bits, l'ordre est B, V, R.
     En gris, une palette de 256 niveaux et le seul plan vert (c'est lui que suit
-    le gris du pilote Brother : corrélation 0,985 sur 2a, contre 0,82 pour le rouge)."""
+    le gris du pilote Brother : corrélation 0,985 sur 2a, contre 0,814 pour le rouge)."""
     oc = 1 if gris else 3
     pas = (LARGEUR * oc + 3) // 4 * 4
     palette = b"".join(bytes((v, v, v, 0)) for v in range(256)) if gris else b""

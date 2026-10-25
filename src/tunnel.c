@@ -25,27 +25,29 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Sélecteurs de lecture permis, chacun avec une trame où le pilote Brother
- * l'envoie. Le dépôt (02 03 00) n'est pas ici : il passe par tunnel_commande. */
+/* Lectures permises : sélecteur et longueur, qui font tous deux partie du CDB
+ * (octets 10-12 et 6-9), chacun avec une trame où le pilote Brother envoie ce
+ * couple. Le dépôt (02 03 00) n'est pas ici : il passe par tunnel_commande. */
 static const struct {
     uint8_t s[3];
+    uint32_t lg;
     const char *source;
 } permis[] = {
-    {{0xFF, 0x02, 0x00}, "signature, 1b trame 20841, 2a trame 772"},
-    {{0xFF, 0x03, 0x00}, "sondage, 1b trame 20860"},
-    {{0xFF, 0x04, 0x00}, "sondage, 1b trame 20854"},
-    {{0xFF, 0x05, 0x00}, "sondage, 1b trame 20872"},
-    {{0xFF, 0x06, 0x00}, "sondage, 1b trame 20905"},
-    {{0x02, 0x01, 0x00}, "en-tête, données, 2a trame 851"},
-    {{0x02, 0x02, 0x00}, "données de la réponse, 2a trame 863"},
-    {{0x02, 0x01, 0x01}, "en-tête, statut, 2a trame 905"},
-    {{0x02, 0x02, 0x01}, "statut de la commande, 2a trame 917"},
-    {{0x02, 0x01, 0x02}, "en-tête, bloc d'image, 2a trame 2418"},
-    {{0x02, 0x02, 0x02}, "état du bloc d'image, 2a trame 2431"},
-    {{0x02, 0x01, 0x03}, "en-tête, identifiant fabricant, 1b trame 20880"},
-    {{0x02, 0x02, 0x03}, "identifiant fabricant, 1b trame 20893"},
-    {{0x02, 0x01, 0x04}, "en-tête, identifiant produit, 1b trame 20935"},
-    {{0x02, 0x02, 0x04}, "identifiant produit, 1b trame 20950"},
+    {{0xFF, 0x02, 0x00}, 4, "signature, 1b trame 20841, 2a trame 772"},
+    {{0xFF, 0x03, 0x00}, 16, "sondage, 1b trame 20860"},
+    {{0xFF, 0x04, 0x00}, 16, "sondage, 1b trame 20854"},
+    {{0xFF, 0x05, 0x00}, 16, "sondage, 1b trame 20872"},
+    {{0xFF, 0x06, 0x00}, 16, "sondage, 1b trame 20905"},
+    {{0x02, 0x01, 0x00}, 2, "en-tête, données, 2a trame 851"},
+    {{0x02, 0x02, 0x00}, 2, "données de la réponse, 2a trame 863"},
+    {{0x02, 0x01, 0x01}, 4, "en-tête, statut, 2a trame 905"},
+    {{0x02, 0x02, 0x01}, 4, "statut de la commande, 2a trame 917"},
+    {{0x02, 0x01, 0x02}, 24, "en-tête, bloc d'image, 2a trame 2418"},
+    {{0x02, 0x02, 0x02}, 24, "état du bloc d'image, 2a trame 2431"},
+    {{0x02, 0x01, 0x03}, 2, "en-tête, identifiant fabricant, 1b trame 20880"},
+    {{0x02, 0x02, 0x03}, 2, "identifiant fabricant, 1b trame 20893"},
+    {{0x02, 0x01, 0x04}, 2, "en-tête, identifiant produit, 1b trame 20935"},
+    {{0x02, 0x02, 0x04}, 2, "identifiant produit, 1b trame 20950"},
 };
 
 /* Dépôts permis, recopiés de la capture 2a (pilote TWAIN, Button Manager
@@ -79,7 +81,9 @@ static const struct {
 
 /* Les deux dépôts de plus de 16 octets, à part pour garder le tableau compact. */
 static const uint8_t send_83[28] = {
-    /* SEND, type 0x83 vendeur, 18 octets : 04 00 00 00 00 00 trois fois (2a trame 1961). */
+    /* SEND, type 0x83 vendeur, 18 octets (2a trame 1961) : neuf mots de 16 bits
+     * gros-boutistes, 0x0400 aux positions 0, 4 et 8 et 0 ailleurs, soit une
+     * matrice 3 × 3 diagonale (déduit : matrice de couleur identité, 0x0400 = 1). */
     0x2a, 0x00, 0x83, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0x00, 0x04, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
 };
@@ -98,10 +102,10 @@ static const uint8_t set_window[89] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
-static int selecteur_permis(const uint8_t s[3])
+static int lecture_permise(const uint8_t s[3], uint32_t lg)
 {
     for (size_t i = 0; i < sizeof permis / sizeof permis[0]; i++)
-        if (memcmp(permis[i].s, s, 3) == 0)
+        if (memcmp(permis[i].s, s, 3) == 0 && permis[i].lg == lg)
             return 1;
     return 0;
 }
@@ -134,9 +138,9 @@ int tunnel_lire(const uint8_t selecteur[3], uint8_t *donnees, uint32_t lg)
     uint8_t cdb[16];
     struct bot_resultat r;
 
-    if (!selecteur_permis(selecteur)) {
-        fprintf(stderr, "sélecteur 0xC5 %02x %02x %02x refusé : absent de la liste de tunnel.c\n",
-                selecteur[0], selecteur[1], selecteur[2]);
+    if (!lecture_permise(selecteur, lg)) {
+        fprintf(stderr, "lecture 0xC5 %02x %02x %02x de %u octets refusée : absente de la liste de tunnel.c\n",
+                selecteur[0], selecteur[1], selecteur[2], lg);
         return -1;
     }
     cdb_tunnel(cdb, selecteur, lg);

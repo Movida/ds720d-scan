@@ -218,7 +218,11 @@ static int commande(uint8_t lun, const uint8_t *cdb, uint8_t lg_cdb, int sortant
     r->statut = csw[12];       /* bCSWStatus, table 5.3 */
 
     /* CSW « significatif » (BOT §6.3.2) : statut 0, 1 ou 2, et un résidu qui ne
-     * dépasse pas ce qu'annonçait le CBW. */
+     * dépasse pas ce qu'annonçait le CBW. Le DS-720D peut violer la seconde règle :
+     * après une commande à résidu non nul, il répète ce résidu dans le CSW des
+     * 0xC5 suivantes (protocole.md §1, « résidu collé », vu sous USBSTOR après un
+     * MODE SENSE de Windows). Nos commandes n'en laissant pas, on garde la règle de
+     * la spec plutôt qu'une tolérance qui masquerait d'autres erreurs. */
     if (r->statut > 2 || r->residu > lg) {
         fprintf(stderr, "CSW non significatif : statut %u, résidu %u pour %u attendus (BOT §6.3.2)\n",
                 r->statut, r->residu, lg);

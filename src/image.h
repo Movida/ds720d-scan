@@ -20,8 +20,10 @@ int image_pgm(const char *chemin, const uint8_t *brut, size_t lignes);
 
 /* PNG (ISO/IEC 15948, « PNG Specification, Second Edition ») 8 bits, en gris
  * (plan vert) ou en couleur (RVB), données zlib en blocs deflate « stockés »,
- * sans compression. Renvoie 0 si tout va bien. */
-int image_png(const char *chemin, const uint8_t *brut, size_t lignes, int couleur);
+ * sans compression. ppp_y : résolution verticale de la fenêtre (300 ou 600 ;
+ * l'horizontale vaut toujours 300, protocole.md §5), pour le chunk pHYs.
+ * Renvoie 0 si tout va bien. */
+int image_png(const char *chemin, const uint8_t *brut, size_t lignes, int couleur, unsigned ppp_y);
 
 /* CRC-32 de PNG (annexe D) et Adler-32 de zlib (RFC 1950 §8), exposés pour le
  * banc d'essai : valeurs de référence connues à vérifier. */

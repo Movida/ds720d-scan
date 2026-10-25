@@ -2,8 +2,10 @@
  * essai_trace.c : banc d'essai du module de trace, sans scanner.
  *
  * On rejoue dans trace.c les octets exacts de l'énumération capturée dans
- * 1b-enumeration.pcap (adresse 15, trames 19191 à 19236), puis
- * banc/compare_traces.py confronte notre trace à celle de l'analyseur Python.
+ * 1b-enumeration.pcap (adresse 15, trames 19191 à 19236), puis des échanges du
+ * protocole vendeur de 1b et de 2a et les dix dépôts de 2a (étapes 3c et 3d ;
+ * plages dans docs/format-trace.md), et banc/compare_traces.py confronte notre
+ * trace à celle de l'analyseur Python.
  * Si les deux concordent, notre décodage en C dit la même chose que l'analyseur,
  * qui a lui-même été contre-vérifié par tshark à l'étape 1d.
  *

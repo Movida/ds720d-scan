@@ -22,9 +22,11 @@
  *
  * Règle du projet : chaque requête envoyée cite sa source, section de spec et
  * trame de la capture de référence où le pilote Windows ou Brother l'envoie
- * lui-même. Rien n'est envoyé qui n'ait été observé dans 1b-enumeration.pcap,
+ * lui-même. Rien n'est envoyé qui n'ait été observé dans 1b-enumeration.pcap
+ * (énumération, prise de contact) ou dans 2a-gris-300-recto-sans-bm.pcap (scan),
  * sauf la Reset Recovery de bot.c, documentée par la spec Bulk-Only (BOT §5.3.4)
- * et réservée aux erreurs de transport.
+ * et réservée aux erreurs de transport, et RELEASE UNIT après une erreur de scan
+ * (palliatif, voir scanner_page).
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -331,6 +333,23 @@ static const uint8_t depot_release[10] = {0x17};
 #define ATTENTE_BLOC_MS 30000ULL
 #define TAILLE_LECTURE 65536u /* taille des lectures 0xC3 du pilote Brother (2a, 52325) */
 #define VOLUME_BLOC_MAX (16u << 20) /* garde-fou : 622 080 o dans toutes les captures */
+/* Garde-fou sur la page : 65 blocs au plus dans les captures (A4 à 600 dpi,
+ * 1e-gris-600-recto) ; 200 blocs, environ 124 Mo, protègent le disque d'un
+ * scanner qui annoncerait des blocs sans fin. */
+#define BLOCS_MAX 200
+
+/* Ctrl+C pendant un scan : au lieu de tuer le programme, qui laisserait l'unité
+ * réservée et la feuille engagée, on lève ce drapeau ; la boucle de lecture
+ * s'arrête au tour suivant et RELEASE UNIT part comme après une erreur. */
+static volatile LONG interrompu;
+
+static BOOL WINAPI sur_ctrl_c(DWORD evenement)
+{
+    if (evenement != CTRL_C_EVENT && evenement != CTRL_BREAK_EVENT)
+        return FALSE;
+    InterlockedExchange(&interrompu, 1);
+    return TRUE;
+}
 
 /* Lit les blocs d'image jusqu'à la fin de page (protocole.md §4) et les écrit
  * dans f. Renvoie le nombre d'octets écrits, ou -1. */
@@ -345,6 +364,10 @@ static long long lire_page(FILE *f)
     ULONGLONG depuis = GetTickCount64();
     for (;;) {
         struct etat_bloc b;
+        if (interrompu) {
+            fprintf(stderr, "scan interrompu (Ctrl+C)\n");
+            return -1;
+        }
         if (tunnel_etat_bloc(&b) != 0)
             return -1;
         if (b.etat == 3) /* fin de page, 2a trame 120206 */
@@ -376,7 +399,10 @@ static long long lire_page(FILE *f)
             reste -= n;
         }
         total += (long long)b.volume;
-        blocs++;
+        if (++blocs >= BLOCS_MAX) {
+            fprintf(stderr, "plus de %d blocs : page anormalement longue, abandon\n", BLOCS_MAX);
+            return -1;
+        }
         /* Statut du READ (trames 52424 à 52436), puis READ suivant (52478). */
         if (tunnel_statut() != 0 || tunnel_deposer(depot_lire_image, sizeof depot_lire_image) != 0)
             return -1;
@@ -397,8 +423,12 @@ static long long lire_page(FILE *f)
  * (CLAUDE.md) : le pilote TWAIN les envoie avec ces octets avant chaque scan,
  * dans toutes les captures.
  *
- * Une fois l'unité réservée, toute erreur tente RELEASE UNIT avant de rendre
- * la main, pour ne pas laisser le scanner réservé (arrêt propre). */
+ * Dès que RESERVE UNIT a été tenté, toute erreur tente RELEASE UNIT avant de
+ * rendre la main, pour ne pas laisser le scanner réservé. C'est un palliatif :
+ * aucune capture ne montre RELEASE après une erreur, ni au milieu d'une page
+ * (READ en attente, feuille engagée) ; SCSI-2 ne fait pas une erreur d'un
+ * RELEASE sans réservation, et c'est la commande que le pilote Brother envoie
+ * pour finir. Ctrl+C passe par le même chemin (sur_ctrl_c). */
 static int scanner_page(const char *sortie)
 {
     /* Le fichier ne doit pas exister : on n'écrase jamais une image. */
@@ -415,29 +445,30 @@ static int scanner_page(const char *sortie)
     int r = lire_papier();
     if (r == 0)
         fprintf(stderr, "pas de feuille dans le chargeur\n");
-    if (r != 1) {
-        fclose(f);
-        remove(sortie);
-        return -1;
-    }
     /* Réglages, trames 1753 à 2171 : chacun déposé puis son statut lu. */
-    if (tunnel_commande(depot_send_95, sizeof depot_send_95, NULL, 0) != 0 ||
+    if (r != 1 || tunnel_commande(depot_send_95, sizeof depot_send_95, NULL, 0) != 0 ||
         tunnel_commande(depot_send_96, sizeof depot_send_96, NULL, 0) != 0 ||
         tunnel_commande(depot_send_83, sizeof depot_send_83, NULL, 0) != 0 ||
-        tunnel_commande(depot_fenetre, sizeof depot_fenetre, NULL, 0) != 0 ||
-        tunnel_commande(depot_reserve, sizeof depot_reserve, NULL, 0) != 0) {
+        tunnel_commande(depot_fenetre, sizeof depot_fenetre, NULL, 0) != 0) {
         fclose(f);
+        remove(sortie); /* rien n'a été écrit : le nom reste libre pour un nouvel essai */
         return -1;
     }
-    /* Unité réservée (trame 2177) : SCAN (2276), lecture, RELEASE (120248). */
+    /* RESERVE UNIT (trame 2177), SCAN (2276), lecture, RELEASE (120248). RELEASE
+     * part dès que RESERVE a été tenté, même si son statut n'a pas été lu. */
+    SetConsoleCtrlHandler(sur_ctrl_c, TRUE);
     long long total = -1;
-    if (tunnel_commande(depot_scan, sizeof depot_scan, NULL, 0) == 0)
+    if (tunnel_commande(depot_reserve, sizeof depot_reserve, NULL, 0) == 0 &&
+        tunnel_commande(depot_scan, sizeof depot_scan, NULL, 0) == 0)
         total = lire_page(f);
     int liberee = tunnel_commande(depot_release, sizeof depot_release, NULL, 0) == 0;
+    SetConsoleCtrlHandler(sur_ctrl_c, FALSE);
     if (fclose(f) != 0)
         total = -1;
     if (!liberee)
         fprintf(stderr, "RELEASE UNIT a échoué : débrancher et rebrancher le scanner\n");
+    if (total < 0)
+        fprintf(stderr, "%s : image incomplète ou absente, à ne pas convertir telle quelle\n", sortie);
     if (total < 0 || !liberee)
         return -1;
     printf("%s : %lld octets, %lld lignes de 3 × 2592 points\n", sortie, total, total / 7776);

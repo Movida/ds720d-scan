@@ -454,7 +454,8 @@ def nom_type_donnees(code):
 def contient_serie_depot(depot):
     """SEND type 0x85 : Capture Tool y envoie la date et le numéro de série du
     scanner (1e-gris-300-recto). Ses données ne s'affichent pas sans --serie."""
-    return len(depot) > 2 and depot[0] == 0x2A and depot[2] == 0x85
+    # Même seuil que src/trace.c : au-delà de la zone de CDB, il y a des données.
+    return len(depot) > LG_ZONE_CDB and depot[0] == 0x2A and depot[2] == 0x85
 
 
 def decrire_fenetre(params):
@@ -705,11 +706,12 @@ class Decodeur:
             if self.masque(p):
                 return []
             tronque = f" (capturés {len(d)})" if p.tronque else ""
-            if (cour and cour[1] == OP_TUNNEL and p.longueur_donnees in (128, 165)
+            demande = int.from_bytes(cour[2][6:10], "big") if cour and len(cour[2]) == 16 else 0
+            if (cour and cour[1] == OP_TUNNEL and (p.longueur_donnees in (128, 165) or demande in (128, 165))
                     and not self.montrer_serie):
-                # Réponses 0xC5 de 128 et 165 o : INQUIRY emballé (12 … a5) et READ
-                # type 0x69 de 128 o, porteurs du numéro de série (1b, 1e-gris-300-recto).
-                # Même règle que contient_serie() dans src/trace.c.
+                # Réponses 0xC5 de 128 et 165 o, reçues ou demandées : INQUIRY emballé
+                # (12 … a5) et READ type 0x69 de 128 o, porteurs du numéro de série
+                # (1b, 1e-gris-300-recto). Même règle que contient_serie() dans src/trace.c.
                 return [self.ligne(p, "DATA-IN", f"{p.longueur_donnees} o{tronque}  "
                                                  f"(numéro de série masqué, --serie)")]
             lignes = [self.ligne(p, "DATA-IN", f"{p.longueur_donnees} o{tronque}  {hexa(d, self.octets_max)}")]

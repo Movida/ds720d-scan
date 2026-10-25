@@ -156,7 +156,7 @@ static int chunk(FILE *f, const char type[4], const uint8_t *donnees, uint32_t l
     return fwrite(t, 1, 8, f) == 8 && fwrite(donnees, 1, lg, f) == lg && fwrite(c, 1, 4, f) == 4 ? 0 : -1;
 }
 
-int image_png(const char *chemin, const uint8_t *brut, size_t lignes, int couleur)
+int image_png(const char *chemin, const uint8_t *brut, size_t lignes, int couleur, unsigned ppp_y)
 {
     /* Signature, §5.2 : 89 « PNG » CR LF SUB LF, faite pour détecter les
      * transferts qui abîment les fins de ligne ou le 8e bit. */
@@ -188,11 +188,12 @@ int image_png(const char *chemin, const uint8_t *brut, size_t lignes, int couleu
     if (chunk(p.f, "IHDR", ihdr, sizeof ihdr) != 0)
         p.ok = 0;
 
-    /* pHYs, §11.3.5.3 : 300 points par pouce = 11 811 par mètre, unité 1 (mètre),
-     * pour qu'un logiciel affiche ou imprime la page à sa vraie taille. */
+    /* pHYs, §11.3.5.3 : points par mètre (300 par pouce = 11 811), unité 1
+     * (mètre), pour qu'un logiciel affiche ou imprime la page à sa vraie taille et
+     * avec ses proportions : à 600 dpi, seule la résolution verticale double. */
     uint8_t phys[9];
     pose_be32(phys, 11811);
-    pose_be32(phys + 4, 11811);
+    pose_be32(phys + 4, ppp_y == 600 ? 23622 : 11811); /* 600 / 0,0254 m, arrondi */
     phys[8] = 1;
     if (chunk(p.f, "pHYs", phys, sizeof phys) != 0)
         p.ok = 0;

@@ -5,7 +5,8 @@
  * réussit (SETUP, CTRL-IN, CBW, DATA-IN, CSW et leurs décodages), pour que
  * banc/compare_traces.py puisse confronter les deux traces sans traduction. Écarts
  * voulus ou connus, listés dans docs/format-trace.md : lignes ERREUR (code Win32
- * au lieu de USBD_STATUS), pas de ligne URB, texte du numéro de série masqué, et
+ * au lieu de USBD_STATUS), ligne URB pour le seul déblocage d'endpoint, texte du
+ * numéro de série masqué, et
  * quelques cas limites (NUL dans un texte). Chaque décodage cite la section de
  * spec qu'il applique, comme dans l'analyseur.
  *
