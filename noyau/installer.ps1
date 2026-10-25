@@ -1,0 +1,203 @@
+﻿# Installe ou retire le pilote du scanner dans la VM du banc noyau (étape 6b).
+#
+# DANS LA VM DS720D-NOYAU SEULEMENT, dans un PowerShell administrateur, par
+# David (Claude n'a pas l'élévation dans la VM) :
+#   cd C:\Users\Public\ds720d
+#   powershell -ExecutionPolicy Bypass -File .\installer.ps1 <action>
+#
+# Actions :
+#   etat                 ce qui est en place (sans droits admin)
+#   certificat           accord A1 : certificat de test dans Root et TrustedPublisher
+#   verificateur         accord A2 : Driver Verifier sur ds720d.sys (redémarrage ensuite)
+#   verificateur-arret   retire Driver Verifier (redémarrage ensuite)
+#   installer            accord A3 : paquet ajouté au magasin, scanner lié à ds720d
+#   cycle [N]            désactive puis réactive le scanner N fois (1 par défaut)
+#   retour               paquet retiré, scanner rendu à WinUSB (comme à l'étape 2)
+#
+# Garde-fou : le script refuse de tourner ailleurs que sur DS720D-NOYAU. Le
+# 25/10, un bcdedit destiné à la VM a été tapé sur Medabot (CLAUDE.md) ; ici,
+# c'est le script qui vérifie, avant toute chose.
+#
+# Fichiers attendus à côté du script (copiés par Claude, banc\vm\invite.ps1) :
+#   paquet\ds720d.inf, paquet\ds720d.sys, paquet\ds720d.cat  (noyau\paquet.ps1)
+#   ds720d-test.cer        partie publique du certificat de test
+#   bascule_winusb.exe     pour l'action « retour »
+#
+# Les identifiants d'instance du scanner contiennent son numéro de série : le
+# script ne les affiche jamais (CLAUDE.md), il désigne le scanner par son
+# identifiant matériel et masque ceux que pnputil écrit (fonction Pnputil).
+# bascule_winusb.exe (action « retour ») ne les affiche pas non plus.
+
+param(
+    [Parameter(Mandatory = $true, Position = 0)]
+    [ValidateSet('etat', 'certificat', 'verificateur', 'verificateur-arret', 'installer', 'cycle', 'retour')]
+    [string]$Action,
+    [Parameter(Position = 1)][ValidateRange(1, 100)][int]$Fois = 1
+)
+
+$ErrorActionPreference = 'Stop'
+
+if ($env:COMPUTERNAME -ne 'DS720D-NOYAU') {
+    throw "Ce script ne tourne que dans la VM DS720D-NOYAU ; ici : $env:COMPUTERNAME. Rien n'a été fait."
+}
+
+$ID_SCANNER = 'USB\VID_04F9&PID_60E2'
+# Empreinte du certificat de test (CLAUDE.md, noyau\signer.ps1) : on n'importe
+# que lui, jamais un fichier .cer qui aurait été remplacé.
+$EMPREINTE = 'B23EC996E38B082462453EFB9F495CCC2B93C2AF'
+$paquetInf = Join-Path $PSScriptRoot 'paquet\ds720d.inf'
+$cer = Join-Path $PSScriptRoot 'ds720d-test.cer'
+
+function Exiger-Admin {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if (-not (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw "Action « $Action » : à lancer dans un PowerShell administrateur."
+    }
+}
+
+# pnputil : 0 réussite, 3010 réussite avec redémarrage demandé
+# (ERROR_SUCCESS_REBOOT_REQUIRED) ; tout autre code est un échec.
+# pnputil affiche l'identifiant d'instance des appareils qu'il supprime,
+# désactive ou réactive, numéro de série compris (constaté au premier essai,
+# 25/10) : sa sortie passe par un filtre qui remplace tout ce qui suit
+# l'identifiant matériel du scanner. $LASTEXITCODE reste celui de pnputil.
+function Pnputil([string[]]$arguments) {
+    Write-Host "> pnputil $($arguments -join ' ')"
+    & pnputil.exe @arguments | ForEach-Object {
+        Write-Host ($_ -replace '(USB\\VID_04F9&PID_60E2\\)\S+', '$1(numéro de série masqué)')
+    }
+    if ($LASTEXITCODE -eq 3010) { Write-Host 'Windows demande un redémarrage pour finir.' }
+    elseif ($LASTEXITCODE -ne 0) { throw "pnputil $($arguments[0]) a échoué ($LASTEXITCODE)" }
+}
+
+function Scanner {
+    # Le scanner présent, désigné sans son identifiant d'instance.
+    Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like "$ID_SCANNER\*" }
+}
+
+function Montrer-Scanner {
+    $s = @(Scanner)
+    if ($s.Count -eq 0) { Write-Host 'Scanner absent (pas connecté à la VM ?)'; return }
+    $s | Get-PnpDeviceProperty DEVPKEY_Device_Service, DEVPKEY_Device_DriverInfPath, DEVPKEY_Device_DriverInfSection,
+        DEVPKEY_Device_DriverVersion, DEVPKEY_Device_ProblemCode, DEVPKEY_Device_Class |
+        Format-Table -AutoSize KeyName, Data | Out-String | Write-Host
+    $s | Format-Table -AutoSize FriendlyName, Status | Out-String | Write-Host
+}
+
+# Nom publié (oemNN.inf) de notre paquet dans le magasin de pilotes, ou $null.
+function Paquet-Publie {
+    $p = Get-WindowsDriver -Online | Where-Object { (Split-Path -Leaf $_.OriginalFileName) -eq 'ds720d.inf' }
+    if (@($p).Count -gt 1) { throw "plusieurs paquets ds720d.inf dans le magasin : $(@($p).Driver -join ', ')" }
+    if ($p) { return $p.Driver }
+    return $null
+}
+
+switch ($Action) {
+    'etat' {
+        Write-Host "Machine : $env:COMPUTERNAME"
+        Montrer-Scanner
+        foreach ($magasin in 'Root', 'TrustedPublisher') {
+            $ok = Test-Path "Cert:\LocalMachine\$magasin\$EMPREINTE"
+            Write-Host "Certificat de test dans LocalMachine\$magasin : $ok"
+        }
+        $svc = Get-Item HKLM:\SYSTEM\CurrentControlSet\Services\ds720d -ErrorAction SilentlyContinue
+        Write-Host "Service ds720d inscrit : $([bool]$svc)"
+        if ($svc) {
+            Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Services\ds720d\Parameters\Wdf -ErrorAction SilentlyContinue |
+                Select-Object VerifierOn, VerboseOn | Format-List | Out-String | Write-Host
+        }
+        # Pilotes soumis à Driver Verifier, lus dans le registre qu'écrit
+        # verifier.exe (lisible sans droits admin, contrairement à /querysettings).
+        $v = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' -ErrorAction SilentlyContinue
+        Write-Host "Driver Verifier : pilotes « $($v.VerifyDrivers) », options 0x$('{0:X}' -f [int]$v.VerifyDriverLevel)"
+    }
+    'certificat' {
+        # Accord A1 (25/10/2026) : le certificat de test devient une racine de
+        # confiance (Root) et un éditeur approuvé (TrustedPublisher), DANS LA VM.
+        # Root : la chaîne de signature du catalogue aboutit à une racine
+        # approuvée. TrustedPublisher : pnputil installe sans demander de
+        # confirmation pour cet éditeur (doc WDK, « Installing a Test-Signed
+        # Driver Package on the Test Computer »).
+        #
+        # Par la classe X509Store de .NET plutôt que par Import-Certificate :
+        # premier essai du 25/10, Root importé mais TrustedPublisher refusé
+        # (E_ACCESSDENIED, en administrateur), alors que ce magasin n'existait
+        # pas encore dans le registre de la VM. Cause probable : le fournisseur
+        # Cert: de PowerShell 5.1 n'ouvre qu'un magasin existant. X509Store,
+        # ouvert en lecture-écriture sans OpenExistingOnly, crée le magasin
+        # s'il manque ; ajouter un certificat déjà présent ne change rien.
+        Exiger-Admin
+        $c = New-Object Security.Cryptography.X509Certificates.X509Certificate2($cer)
+        if ($c.Thumbprint -ne $EMPREINTE) { throw "certificat inattendu : $($c.Thumbprint) au lieu de $EMPREINTE" }
+        foreach ($magasin in 'Root', 'TrustedPublisher') {
+            $m = New-Object Security.Cryptography.X509Certificates.X509Store($magasin, 'LocalMachine')
+            $m.Open('ReadWrite')
+            try { $m.Add($c) } finally { $m.Close() }
+            if (-not (Test-Path "Cert:\LocalMachine\$magasin\$EMPREINTE")) { throw "absent de LocalMachine\$magasin après l'ajout" }
+            Write-Host "présent dans LocalMachine\$magasin : $($c.Subject) ($EMPREINTE)"
+        }
+    }
+    'verificateur' {
+        # Accord A2 (25/10/2026). /standard : contrôles standard de Driver
+        # Verifier (pool spécial, IRQL, E/S, interblocages…) ; /driver : sur
+        # ds720d.sys seul. Effet au prochain démarrage de la VM. Le vérificateur
+        # KMDF, lui, est posé par l'INF (VerifierOn).
+        Exiger-Admin
+        & verifier.exe /standard /driver ds720d.sys
+        Write-Host "verifier : code $LASTEXITCODE. Redémarrer la VM pour que ce soit actif."
+    }
+    'verificateur-arret' {
+        Exiger-Admin
+        & verifier.exe /reset
+        Write-Host "verifier : code $LASTEXITCODE. Redémarrer la VM pour que ce soit effectif."
+    }
+    'installer' {
+        # Accord A3 (25/10/2026) : premier chargement de ds720d.sys.
+        # 1. Le paquet entre dans le magasin de pilotes, sans encore toucher au
+        #    scanner (pas de /install : on garde la main sur le moment de la bascule).
+        # 2. Le nœud du scanner est supprimé puis redétecté : Windows choisit
+        #    alors, parmi les pilotes du magasin, le mieux classé pour lui. Le
+        #    nôtre répond à son identifiant matériel exact ; USBSTOR seulement à
+        #    son identifiant compatible, moins bien classé (doc WDK, « How
+        #    Windows Ranks Drivers ») ; le modèle générique de WinUSB à aucun.
+        #    Pourquoi pas « pnputil /add-driver … /install » seul : il ne
+        #    remplace le pilote en place que s'il juge le nouveau meilleur, et
+        #    WinUSB a été posé à la main (bascule_winusb.exe) ; supprimer et
+        #    redétecter donne toujours le même chemin, le même que le retour de
+        #    l'étape 2 (docs/winusb.md).
+        # Montage automatique coupé dans la VM depuis 5d : si USBSTOR prenait
+        # malgré tout le scanner, aucun volume ne serait monté.
+        Exiger-Admin
+        if (-not (Scanner)) { throw 'scanner absent : le connecter à la VM (menu de VMware) avant' }
+        Pnputil @('/add-driver', $paquetInf)
+        Pnputil @('/remove-device', '/deviceid', $ID_SCANNER)
+        Pnputil @('/scan-devices')
+        Start-Sleep -Seconds 3
+        Montrer-Scanner
+    }
+    'cycle' {
+        # Désactiver arrête l'appareil (D0Exit, ReleaseHardware) sans le
+        # supprimer ; réactiver le redémarre (PrepareHardware, D0Entry). Sous
+        # Driver Verifier, une fuite ou une faute s'y voit vite.
+        Exiger-Admin
+        for ($i = 1; $i -le $Fois; $i++) {
+            Write-Host "--- cycle $i / $Fois"
+            Pnputil @('/disable-device', '/deviceid', $ID_SCANNER)
+            Pnputil @('/enable-device', '/deviceid', $ID_SCANNER)
+        }
+        Montrer-Scanner
+    }
+    'retour' {
+        # Retour à WinUSB : le paquet est désinstallé du scanner et retiré du
+        # magasin ; le scanner retombe sur USBSTOR (montage coupé, aucun volume),
+        # puis bascule_winusb.exe le passe sous WinUSB, comme à l'étape 2.
+        Exiger-Admin
+        $oem = Paquet-Publie
+        if ($oem) { Pnputil @('/delete-driver', $oem, '/uninstall') }
+        else { Write-Host 'paquet ds720d absent du magasin' }
+        Start-Sleep -Seconds 3
+        & (Join-Path $PSScriptRoot 'bascule_winusb.exe') --oui
+        if ($LASTEXITCODE -ne 0) { throw "bascule_winusb a échoué ($LASTEXITCODE)" }
+        Montrer-Scanner
+    }
+}

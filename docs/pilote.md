@@ -96,3 +96,29 @@ Rien d'autre ne change de nature : aucune nouvelle commande SCSI (INQUIRY, 0xC5 
 - **Le scanner passe par USBSTOR** entre deux pilotes dans la VM : montage automatique coupé depuis 5d ; Windows y a déjà lu le faux disque sans y écrire.
 - **VMware et les gros transferts** : si l'hôte découpe nos URB de 64 Kio, la comparaison des traces avec la capture devra en tenir compte (6g).
 - **Medabot** n'installe jamais le paquet : il s'y construit et s'y signe seulement. Installé par erreur, il serait refusé (certificat approuvé nulle part sur Medabot, pas de test-signing possible sous Secure Boot).
+
+## 7. Journal des sous-étapes
+
+### 6b : squelette PnP et installation dans la VM (25/10)
+
+Fichiers :
+- `noyau/ds720d.c` : `DriverEntry`, `EvtDriverDeviceAdd`, `PrepareHardware`, `ReleaseHardware`, `D0Entry`, `D0Exit`, `SurpriseRemoval`, `EvtDriverUnload`, chacun annoncé par `DbgPrintEx` ; aucun transfert. Rappels de PnP en section `PAGE`, `DriverEntry` en `INIT`, rappels d'alimentation non paginés (`dumpbin` : sections `PAGE` et `INIT` présentes, imports `ntoskrnl.exe` et `WDFLDR.SYS`).
+- `noyau/ds720d.inf` : écrite à la main, en ASCII ; classe USBDevice, identifiant matériel exact, `DefaultDestDir = 13` (le pilote tourne depuis le magasin de pilotes), `PnpLockdown`, KMDF 1.15, vérificateur KMDF posé dans le registre du service (`VerifierOn`, `VerboseOn`). `InfVerif /w` et `/k` : valide.
+- `Makefile` : cible `out\noyau\ds720d.sys` ; `NTDDI_VERSION` fixé à Windows 10 2004 pour tous les pilotes du dépôt.
+- `noyau/paquet.ps1` : copie dans `out\noyau\paquet`, signature du `.sys`, `InfVerif /w`, `Inf2Cat /os:10_GE_X64`, signature du catalogue, empreintes.
+- `noyau/installer.ps1` : actions `etat`, `certificat`, `verificateur`, `verificateur-arret`, `installer`, `cycle`, `retour` ; refuse de tourner ailleurs que sur `DS720D-NOYAU`.
+
+Déroulé dans la VM (instantané `avant-6b` pris avant) :
+1. `certificat` (A1), `verificateur` (A2), redémarrage : Driver Verifier actif sur `ds720d.sys` (options 0x1209BB, celles de `/standard`), annoncé par WinDbg au démarrage.
+2. Scanner passé à la VM sous WinUSB, puis `installer` (A3) : le scanner passe sous `ds720d` (`oem10.inf`, section `Installer_ds720d.NT`, version 6.2.0.0, code de problème 0). WinDbg : `DriverEntry`, `EvtDriverDeviceAdd`, `EvtDevicePrepareHardware` (0 ressource matérielle, normal pour un appareil USB), `EvtDeviceD0Entry` depuis `D3Final`.
+3. `cycle 5` : à chaque désactivation, `D0Exit` vers `D3Final`, `ReleaseHardware`, puis `dechargement` ; à chaque réactivation, `DriverEntry` à nouveau. Sans appareil à tenir, Windows décharge le pilote : c'est le fonctionnement normal d'un pilote PnP à démarrage à la demande. Aucune faute sous Driver Verifier ni sous le vérificateur KMDF.
+4. `retour` : USBSTOR un instant (lectures seules, aucun volume monté), puis WinUSB ; `ds720d inquiry` dans la VM : trace identique à celle de 5d.
+5. `installer` à nouveau : le scanner reste sous `ds720d` pour la suite.
+
+Contrôle sur le bus (capture `6b-installation`, [captures.md](captures.md)) : pendant que `ds720d` tient le scanner, seul le concentrateur lui parle (descripteur DEVICE à chaque énumération) ; aucun SET_CONFIGURATION, aucun CBW de notre fait.
+
+Pièges :
+- `Import-Certificate` a refusé le magasin TrustedPublisher de l'ordinateur (E_ACCESSDENIED, en administrateur), qui n'existait pas encore dans la VM ; Root est passé. Cause probable : le fournisseur `Cert:` de PowerShell 5.1 n'ouvre qu'un magasin existant. `installer.ps1` passe désormais par la classe `X509Store` de .NET, qui le crée.
+- `pnputil /remove-device` (et `/disable-device`, `/enable-device`) affiche l'identifiant d'instance du scanner, numéro de série compris : vu sur une capture d'écran du premier essai, restée dans le fil du projet. `installer.ps1` filtre désormais la sortie de `pnputil`.
+- Windows Update a redémarré la VM pendant la séance (mise à jour déjà en cours) ; suspendu ensuite jusqu'au 29/11.
+- `.logopen` est une commande de WinDbg, à taper dans sa fenêtre Command (VM arrêtée par Break, puis `g`), pas dans PowerShell.

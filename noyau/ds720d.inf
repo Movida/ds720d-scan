@@ -1,0 +1,93 @@
+; ds720d.inf : installe ds720d.sys, notre pilote KMDF, pour le scanner
+; Brother DS-720D (etape 6b, docs/pilote.md). Ecrite a la main, section par
+; section, d'apres la doc WDK (INF Version, Manufacturer, Models, DDInstall,
+; DDInstall.Services, DDInstall.WDF, SourceDisksNames/Files, DestinationDirs).
+;
+; Fichier en ASCII, sans accents, comme construire.cmd : SetupAPI lit une INF
+; non Unicode dans la page de code du systeme, et une INF en UTF-16 rendrait
+; les diff de Git illisibles.
+;
+; PAQUET DE TEST, POUR LA VM DS720D-NOYAU SEULEMENT : signe par un certificat
+; de test (noyau\signer.ps1) et approuve uniquement dans la VM. Medabot le
+; refuserait (CLAUDE.md).
+
+[Version]
+Signature   = "$WINDOWS NT$"
+; Classe USBDevice, celle de winusb.inf : la classe recommandee pour un
+; appareil USB sans classe Windows propre. Pas la classe Image ({6BDD1FC6-...}) :
+; elle attend un pilote de la pile WIA/STI, que le projet n'utilise pas.
+Class       = USBDevice
+ClassGuid   = {88BAE032-5A81-49F0-BC3D-A4FF138216D6}
+Provider    = %Fournisseur%
+CatalogFile = ds720d.cat
+; Date et version du paquet : 6.2 pour l'etape 6b. Elles departagent deux
+; paquets du meme appareil ; a monter a chaque nouvelle version installee.
+DriverVer   = 10/25/2026,6.2.0.0
+; Empeche un autre installateur de remplacer nos fichiers (doc WDK, PnpLockdown).
+PnpLockdown = 1
+
+[DestinationDirs]
+; 13 : le pilote tourne depuis le magasin de pilotes, sans copie dans
+; System32\drivers (doc WDK, "Run From Driver Store", Windows 10 1709+).
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %Disque%
+
+[SourceDisksFiles]
+ds720d.sys = 1
+
+[Manufacturer]
+; NTamd64.10.0...16299 : x64, Windows 10 1709 (build 16299) et suivants,
+; la premiere version qui comprend DefaultDestDir = 13.
+%Fabricant% = Modeles, NTamd64.10.0...16299
+
+[Modeles.NTamd64.10.0...16299]
+; Identifiant materiel exact du scanner (docs/passation.md : USB\VID_04F9&PID_60E2,
+; aussi rapporte avec &REV_0100). Rien d'autre : ni l'identifiant compatible
+; USB\Class_08&SubClass_06&Prot_50, qui ferait prendre a ce pilote toutes les
+; cles USB, ni d'identifiant generique.
+%NomAppareil% = Installer_ds720d, USB\VID_04F9&PID_60E2
+
+[Installer_ds720d.NT]
+CopyFiles = Fichiers_ds720d
+
+[Fichiers_ds720d]
+ds720d.sys
+
+[Installer_ds720d.NT.Services]
+; 0x00000002 : SPSVCINST_ASSOCSERVICE, ce service est le pilote de fonction
+; de l'appareil.
+AddService = ds720d, 0x00000002, Service_ds720d
+
+[Service_ds720d]
+DisplayName   = %NomService%
+ServiceType   = 1               ; SERVICE_KERNEL_DRIVER
+StartType     = 3               ; SERVICE_DEMAND_START : charge par le PnP a l'arrivee du scanner
+ErrorControl  = 1               ; SERVICE_ERROR_NORMAL : un echec est journalise, sans plus
+ServiceBinary = %13%\ds720d.sys
+AddReg        = Verificateur_KMDF
+
+[Verificateur_KMDF]
+; Verificateur KMDF (doc WDK, "Using KMDF Verifier"), accord ecrit de David
+; du 25/10/2026 (A2) : KMDF controle chaque appel du pilote et arrete le
+; systeme sur une faute au lieu de la laisser passer. VerboseOn : journal
+; interne de KMDF detaille (lisible par !wdfkd.wdflogdump). Reglages de
+; developpement, a retirer de toute INF qui ne serait plus de test.
+HKR, Parameters\Wdf, VerifierOn, 0x00010001, 1
+HKR, Parameters\Wdf, VerboseOn,  0x00010001, 1
+
+[Installer_ds720d.NT.Wdf]
+KmdfService = ds720d, Wdf_ds720d
+
+[Wdf_ds720d]
+; KMDF 1.15, comme a la compilation (Makefile) : fourni avec Windows 10 et
+; suivants, d'ou l'absence de coinstallateur.
+KmdfLibraryVersion = 1.15
+
+[Strings]
+Fournisseur = "ds720d-scan (David Morvan)"
+Fabricant   = "ds720d-scan (pilote d'etude, non officiel)"
+Disque      = "Paquet ds720d"
+NomAppareil = "DS-720D (pilote ds720d-scan)"
+NomService  = "ds720d : pilote KMDF du DS-720D (etude)"

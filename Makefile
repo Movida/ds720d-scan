@@ -103,11 +103,15 @@ out\essai_trace.exe: out\essai_trace.obj out\trace.obj
 # KMDF 1.15 : la plus ancienne version du WDK 26100, présente depuis Windows 10
 # 1507 ; nos pilotes n'ont besoin d'aucune fonction plus récente, et une version
 # basse se charge partout (WdfLdr refuse une version plus haute que celle du
-# système). Cela ne vaut que pour KMDF : NTDDI_VERSION n'étant pas fixé, les
-# en-têtes du noyau visent la dernière version de Windows (NTDDI_WIN11_GE) ;
-# bonjour.sys n'appelle rien de récent, le pilote du scanner fixera sa cible.
-# KMDF_VERSION_MAJOR/MINOR ne sont lus par les en-têtes qu'à partir de KMDF
-# 1.25 : avec 1.15, ils ne servent qu'au message de bonjour.c.
+# système). KMDF_VERSION_MAJOR/MINOR ne sont lus par les en-têtes qu'à partir
+# de KMDF 1.25 : avec 1.15, ils ne servent qu'aux messages de DriverEntry.
+#
+# Cible des en-têtes du noyau (étape 6b) : NTDDI_VERSION 0x0A000008, Windows 10
+# 2004 (NTDDI_WIN10_VB, sdkddkver.h), la première version qui a ExAllocatePool2
+# (allocations remises à zéro, à partir de 6d). Sans ce réglage, les en-têtes
+# viseraient la dernière version de Windows et laisseraient appeler des
+# fonctions absentes des versions plus anciennes, sans le moindre avertissement.
+# _WIN32_WINNT suit (0x0A00, Windows 10), comme l'exige sdkddkver.h.
 #
 # Options propres au noyau :
 #   /kernel    code noyau : pas d'exceptions C++, pas de RTTI, définit _KERNEL_MODE
@@ -124,7 +128,7 @@ KCFLAGS = /nologo /utf-8 /std:c17 /W4 /WX /Zi /Od /kernel /GS /Gy /X \
 	/I"$(WDK)\Include\$(WDKVER)\km\crt" /I"$(WDK)\Include\$(WDKVER)\km" \
 	/I"$(WDK)\Include\$(WDKVER)\shared" /I"$(WDK)\Include\wdf\kmdf\$(KMDF_MAJ).$(KMDF_MIN)" \
 	/D_WIN64 /D_AMD64_ /DAMD64 /DKMDF_VERSION_MAJOR=$(KMDF_MAJ) /DKMDF_VERSION_MINOR=$(KMDF_MIN) \
-	/Fdout\noyau\vc.pdb
+	/DNTDDI_VERSION=0x0A000008 /D_WIN32_WINNT=0x0A00 /Fdout\noyau\vc.pdb
 # Options de link pour un pilote :
 #   /DRIVER /SUBSYSTEM:NATIVE   image noyau, chargée par le gestionnaire d'E/S
 #   /ENTRY:FxDriverEntry        entrée de KMDF (WdfDriverEntry.lib) : lie le pilote
@@ -140,7 +144,7 @@ KLDFLAGS = /nologo /DEBUG /DRIVER /SUBSYSTEM:NATIVE,10.00 /ENTRY:FxDriverEntry /
 # WdfDriverEntry.lib : FxDriverEntry ; WdfLdr.lib : chargement de la bibliothèque KMDF.
 KLIBS = ntoskrnl.lib hal.lib BufferOverflowFastFailK.lib WdfDriverEntry.lib WdfLdr.lib
 
-noyau: out\noyau\bonjour.sys
+noyau: out\noyau\bonjour.sys out\noyau\ds720d.sys
 
 # Pilote d'essai sans matériel (étape 5f) : DriverEntry, DbgPrint, déchargement.
 out\noyau\bonjour.obj: noyau\bonjour.c
@@ -149,6 +153,17 @@ out\noyau\bonjour.obj: noyau\bonjour.c
 
 out\noyau\bonjour.sys: out\noyau\bonjour.obj
 	link $(KLDFLAGS) /OUT:$@ out\noyau\bonjour.obj $(KLIBS)
+
+# Pilote du scanner (étape 6, docs/pilote.md). Le paquet d'installation (INF,
+# catalogue, signatures) se fait ensuite par noyau\paquet.ps1 : signer demande
+# le certificat du magasin de l'utilisateur, ce qui relève d'un script plutôt
+# que de la construction.
+out\noyau\ds720d.obj: noyau\ds720d.c
+	@if not exist out\noyau mkdir out\noyau
+	cl $(KCFLAGS) /c /Fo$@ noyau\ds720d.c
+
+out\noyau\ds720d.sys: out\noyau\ds720d.obj
+	link $(KLDFLAGS) /OUT:$@ out\noyau\ds720d.obj $(KLIBS)
 
 clean:
 	@if exist out rmdir /s /q out
