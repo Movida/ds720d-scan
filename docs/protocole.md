@@ -128,6 +128,7 @@ Le sens de 2 592 et 240 est établi à l'étape 3b (section suivante) : 240 plan
 - 2 592 points = 8,64 po à 300 ppp, la largeur de la fenêtre. Le pilote Brother en garde 2 548, à partir du 5e point, et saute les 11 premières lignes. Sous la feuille, il complète jusqu'à 4 200 lignes (14 po) avec un fond sombre.
 - **Le gris du pilote Brother suit le plan vert** : corrélation 0,985 sur 2a, contre 0,957 pour le bleu, 0,814 pour le rouge et 0,974 pour la luminance 0,299 R + 0,587 V + 0,114 B.
 - Les valeurs brutes sont sombres : le pilote leur applique sur le PC une courbe de tons (un brut de 144 donne environ 244). Seule la forme de l'image est comparable, pas les octets. La correction varie peu d'une colonne à l'autre (110 à 116 pour un même brut, par tranches de 128 colonnes sur les 1 280 premières, photo couleur) : l'essentiel est une courbe globale (déduit).
+- `out\convertir.exe` (étape 3f) écrit cette image brute en PGM (plan vert) ou en PNG gris ou couleur, sans recadrage ni courbe de tons : elle reste donc sombre.
 - À 600 dpi, la fenêtre ne double que la résolution Y : le scanner rend toujours 2 592 points par ligne, mais deux fois plus de lignes (65 blocs, 5 200 lignes). La largeur de 5 100 du BMP TWAIN est donc interpolée sur le PC (déduit).
 
 ## 6. Questions ouvertes

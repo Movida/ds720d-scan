@@ -15,7 +15,27 @@
 CFLAGS = /nologo /utf-8 /std:c17 /W4 /WX /Zi /Od /MT /Fdout\vc.pdb
 LDFLAGS = /nologo /DEBUG
 
-all: out\essai_trace.exe out\essai_bot.exe out\ds720d.exe out\bascule_winusb.exe
+all: out\essai_trace.exe out\essai_bot.exe out\essai_image.exe out\ds720d.exe out\convertir.exe out\bascule_winusb.exe
+
+# Image brute vers PGM ou PNG (étape 3f) : ne parle pas au scanner.
+out\image.obj: src\image.c src\image.h
+	@if not exist out mkdir out
+	cl $(CFLAGS) /c /Fo$@ src\image.c
+
+out\convertir.obj: src\convertir.c src\image.h
+	@if not exist out mkdir out
+	cl $(CFLAGS) /c /Fo$@ src\convertir.c
+
+out\convertir.exe: out\convertir.obj out\image.obj
+	link $(LDFLAGS) /OUT:$@ out\convertir.obj out\image.obj
+
+# Sommes de contrôle de image.c contre des valeurs de référence publiées.
+out\essai_image.obj: src\essai_image.c src\image.h
+	@if not exist out mkdir out
+	cl $(CFLAGS) /c /Fo$@ src\essai_image.c
+
+out\essai_image.exe: out\essai_image.obj out\image.obj
+	link $(LDFLAGS) /OUT:$@ out\essai_image.obj out\image.obj
 
 # Essai de bot.c et tunnel.c contre un faux périphérique (bouchons dans essai_bot.c) :
 # ni peripherique.obj ni winusb.lib, rien ne peut partir vers le scanner.
