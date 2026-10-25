@@ -118,8 +118,23 @@ Constat utile pour l'étape 6 : **USBPcap sur Medabot voit le trafic que la VM �
 
 Le scanner reste attaché à la VM jusqu'à ce qu'on le rende à Medabot (même menu, Déconnecter) ; il y retrouve WinUSB.
 
+## Débogage noyau par KDNET (5e, 25/10)
+
+Accord écrit de David le 25/10 pour bcdedit dans la VM et la règle de pare-feu de Medabot.
+
+1. Instantané `avant-debug` (VM figée avant toute modification de son démarrage).
+2. Dans la VM, en admin, par David : `bcdedit /debug on` puis `bcdedit /dbgsettings net hostip:192.168.150.1 port:50000`. bcdedit génère la clé de session : elle reste chez David, ni dans le dépôt ni dans le fil.
+3. Sur Medabot, en admin, par David : `New-NetFirewallRule -DisplayName "ds720d KDNET (VM)" -Direction Inbound -Protocol UDP -LocalPort 50000 -RemoteAddress 192.168.150.128 -Action Allow`. C'est la seule modification de Medabot à l'étape 5.
+4. WinDbg sur Medabot : Attach to kernel, Net, port 50000 et la clé ; redémarrage de la VM.
+
+Résultat : « Connected to target 192.168.150.128 on port 50000 on local IP 192.168.150.1 ». Dans l'invité, la carte e1000e passe sous « Microsoft Kernel Debug Network Adapter », même adresse : le réseau de la VM et KDNET partagent la carte. Arrêt (Break), `vertarget` (noyau 26100, 4 processeurs, x64), `lm m winusb` (WinUSB chargé), `!devnode 0 1 WINUSB` (le scanner, `DeviceNodeStarted`), puis `g` : la VM repart. Instantané **`debug-pret`**.
+
+Pour s'attacher à nouveau : WinDbg, Attach to kernel, Net, port 50000, la clé ; la VM se connecte à chaque démarrage. La liaison série sur tube nommé, prévue en secours, n'a pas servi.
+
+Retour arrière : revenir à `avant-debug`, ou `bcdedit /debug off` dans la VM ; sur Medabot, `Remove-NetFirewallRule -DisplayName "ds720d KDNET (VM)"`.
+
 ## Retour arrière
 
 - **VM** : revenir à un instantané, ou supprimer la VM ; rien ne fuit vers Medabot.
-- **Medabot** : désinstaller VMware, WinDbg et le WDK depuis les paramètres ; supprimer la règle de pare-feu de 5e ; en dernier recours, le point de restauration de 5b.
+- **Medabot** : désinstaller VMware, WinDbg et le WDK depuis les paramètres ; supprimer la règle de pare-feu de 5e (`Remove-NetFirewallRule -DisplayName "ds720d KDNET (VM)"`) ; en dernier recours, le point de restauration de 5b.
 - **Scanner** : quand VMware le rend à Medabot, il retrouve WinUSB ; sinon débrancher et rebrancher. Retour au pilote Brother : [winusb.md](winusb.md).
