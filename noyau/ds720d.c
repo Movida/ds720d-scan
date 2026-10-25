@@ -22,8 +22,9 @@
  * débranchement : EvtDeviceSurpriseRemoval s'intercale (« A User Unplugs a
  * Device »). EvtDriverUnload enfin, quand plus aucun appareil n'utilise le pilote.
  *
- * Messages par DbgPrintEx au niveau DPFLTR_ERROR_LEVEL, en ASCII, comme dans
- * bonjour.c ; les traces WPP les remplaceront à l'étape 6c.
+ * Messages par traces WPP depuis l'étape 6c (noyau/wpp.h) : gardés dans
+ * l'enregistreur en mémoire du pilote (IFR) et recopiés vers le débogueur.
+ * Textes en ASCII : le débogueur n'interprète pas l'UTF-8 des chaînes ANSI.
  *
  * Code paginable : DriverEntry ne sert qu'au chargement (section INIT, rendue
  * au système ensuite) ; EvtDriverDeviceAdd, EvtDevicePrepareHardware et
@@ -45,6 +46,12 @@
 #include <wdf.h>
 #pragma warning(pop)
 
+/* Traces WPP : la configuration, puis l'en-tête que tracewpp génère pour ce
+ * source (out\noyau\ds720d.tmh, Makefile). Il doit venir après tout ce qu'il
+ * utilise et avant le premier appel de Trace. */
+#include "wpp.h"
+#include "ds720d.tmh"
+
 DRIVER_INITIALIZE DriverEntry;
 EVT_WDF_DRIVER_DEVICE_ADD Ds720dAjoutAppareil;
 EVT_WDF_DRIVER_UNLOAD Ds720dDecharge;
@@ -61,8 +68,6 @@ EVT_WDF_DEVICE_SURPRISE_REMOVAL Ds720dRetraitInopine;
 #pragma alloc_text(PAGE, Ds720dLibererMateriel)
 #pragma alloc_text(PAGE, Ds720dDecharge)
 #endif
-
-#define MSG(...) DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "ds720d : " __VA_ARGS__)
 
 /* Nom lisible d'un état d'alimentation de KMDF (WDF_POWER_DEVICE_STATE,
  * wdfdevice.h) pour les messages de D0Entry et D0Exit. */
@@ -84,8 +89,13 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     WDF_DRIVER_CONFIG config;
     NTSTATUS statut;
 
-    MSG("DriverEntry, KMDF demande %u.%u, service %wZ\n", KMDF_VERSION_MAJOR, KMDF_VERSION_MINOR,
-        RegistryPath);
+    /* Les traces d'abord, pour que tout ce qui suit soit enregistré. L'IFR a
+     * besoin de l'objet pilote et du chemin du service (km-init.tpl). Le
+     * chemin du service n'est plus affiché comme en 6b (%wZ) : WPP l'écrirait
+     * %!USTR!, que DbgPrint ne comprend pas (noyau/wpp.h). */
+    WPP_INIT_TRACING(DriverObject, RegistryPath);
+    Trace(TRACE_LEVEL_INFORMATION, TRACE_PILOTE, "DriverEntry, KMDF demande %u.%u", KMDF_VERSION_MAJOR,
+          KMDF_VERSION_MINOR);
 
     /* Pilote PnP : KMDF appellera Ds720dAjoutAppareil pour chaque scanner que
      * le gestionnaire PnP nous confie (un seul en pratique). */
@@ -93,8 +103,12 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     config.EvtDriverUnload = Ds720dDecharge;
 
     statut = WdfDriverCreate(DriverObject, RegistryPath, WDF_NO_OBJECT_ATTRIBUTES, &config, WDF_NO_HANDLE);
-    if (!NT_SUCCESS(statut))
-        MSG("WdfDriverCreate a echoue (0x%08lX)\n", (ULONG)statut);
+    if (!NT_SUCCESS(statut)) {
+        /* Pas d'objet pilote KMDF, donc pas d'EvtDriverUnload : on arrête
+         * les traces ici, avant que l'image ne quitte la mémoire. */
+        Trace(TRACE_LEVEL_ERROR, TRACE_PILOTE, "WdfDriverCreate a echoue (0x%08lX)", (ULONG)statut);
+        WPP_CLEANUP(DriverObject);
+    }
     return statut;
 }
 
@@ -112,7 +126,7 @@ NTSTATUS Ds720dAjoutAppareil(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
 
     UNREFERENCED_PARAMETER(Driver);
     PAGED_CODE();
-    MSG("EvtDriverDeviceAdd\n");
+    Trace(TRACE_LEVEL_INFORMATION, TRACE_PNP, "EvtDriverDeviceAdd");
 
     WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnp);
     pnp.EvtDevicePrepareHardware = Ds720dPreparerMateriel;
@@ -126,10 +140,10 @@ NTSTATUS Ds720dAjoutAppareil(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
      * ne doit encore pouvoir nous ouvrir depuis l'espace utilisateur (6e). */
     statut = WdfDeviceCreate(&DeviceInit, WDF_NO_OBJECT_ATTRIBUTES, &appareil);
     if (!NT_SUCCESS(statut)) {
-        MSG("WdfDeviceCreate a echoue (0x%08lX)\n", (ULONG)statut);
+        Trace(TRACE_LEVEL_ERROR, TRACE_PNP, "WdfDeviceCreate a echoue (0x%08lX)", (ULONG)statut);
         return statut;
     }
-    MSG("objet de peripherique cree, attache au-dessus du PDO du concentrateur\n");
+    Trace(TRACE_LEVEL_INFORMATION, TRACE_PNP, "objet de peripherique cree, attache au-dessus du PDO du concentrateur");
     return STATUS_SUCCESS;
 }
 
@@ -144,7 +158,8 @@ NTSTATUS Ds720dPreparerMateriel(WDFDEVICE Device, WDFCMRESLIST ResourcesRaw, WDF
     UNREFERENCED_PARAMETER(Device);
     UNREFERENCED_PARAMETER(ResourcesRaw);
     PAGED_CODE();
-    MSG("EvtDevicePrepareHardware : %lu ressource(s) materielle(s)\n", WdfCmResourceListGetCount(ResourcesTranslated));
+    Trace(TRACE_LEVEL_INFORMATION, TRACE_PNP, "EvtDevicePrepareHardware : %lu ressource(s) materielle(s)",
+          WdfCmResourceListGetCount(ResourcesTranslated));
     return STATUS_SUCCESS;
 }
 
@@ -155,7 +170,7 @@ NTSTATUS Ds720dLibererMateriel(WDFDEVICE Device, WDFCMRESLIST ResourcesTranslate
     UNREFERENCED_PARAMETER(Device);
     UNREFERENCED_PARAMETER(ResourcesTranslated);
     PAGED_CODE();
-    MSG("EvtDeviceReleaseHardware\n");
+    Trace(TRACE_LEVEL_INFORMATION, TRACE_PNP, "EvtDeviceReleaseHardware");
     return STATUS_SUCCESS;
 }
 
@@ -163,7 +178,7 @@ NTSTATUS Ds720dLibererMateriel(WDFDEVICE Device, WDFCMRESLIST ResourcesTranslate
 NTSTATUS Ds720dEntreeD0(WDFDEVICE Device, WDF_POWER_DEVICE_STATE PreviousState)
 {
     UNREFERENCED_PARAMETER(Device);
-    MSG("EvtDeviceD0Entry, depuis %s\n", NomEtatD(PreviousState));
+    Trace(TRACE_LEVEL_INFORMATION, TRACE_PNP, "EvtDeviceD0Entry, depuis %s", NomEtatD(PreviousState));
     return STATUS_SUCCESS;
 }
 
@@ -171,7 +186,7 @@ NTSTATUS Ds720dEntreeD0(WDFDEVICE Device, WDF_POWER_DEVICE_STATE PreviousState)
 NTSTATUS Ds720dSortieD0(WDFDEVICE Device, WDF_POWER_DEVICE_STATE TargetState)
 {
     UNREFERENCED_PARAMETER(Device);
-    MSG("EvtDeviceD0Exit, vers %s\n", NomEtatD(TargetState));
+    Trace(TRACE_LEVEL_INFORMATION, TRACE_PNP, "EvtDeviceD0Exit, vers %s", NomEtatD(TargetState));
     return STATUS_SUCCESS;
 }
 
@@ -181,13 +196,14 @@ NTSTATUS Ds720dSortieD0(WDFDEVICE Device, WDF_POWER_DEVICE_STATE TargetState)
 VOID Ds720dRetraitInopine(WDFDEVICE Device)
 {
     UNREFERENCED_PARAMETER(Device);
-    MSG("EvtDeviceSurpriseRemoval : scanner debranche\n");
+    Trace(TRACE_LEVEL_WARNING, TRACE_PNP, "EvtDeviceSurpriseRemoval : scanner debranche");
 }
 
-/* Plus aucun scanner n'utilise le pilote : l'image va quitter la mémoire. */
+/* Plus aucun scanner n'utilise le pilote : l'image va quitter la mémoire. On
+ * arrête les traces en dernier : l'IFR et son tampon disparaissent avec elles. */
 VOID Ds720dDecharge(WDFDRIVER Driver)
 {
-    UNREFERENCED_PARAMETER(Driver);
     PAGED_CODE();
-    MSG("dechargement\n");
+    Trace(TRACE_LEVEL_INFORMATION, TRACE_PILOTE, "dechargement");
+    WPP_CLEANUP(WdfDriverWdmGetDriverObject(Driver));
 }

@@ -20,9 +20,11 @@ Class       = USBDevice
 ClassGuid   = {88BAE032-5A81-49F0-BC3D-A4FF138216D6}
 Provider    = %Fournisseur%
 CatalogFile = ds720d.cat
-; Date et version du paquet : 6.2 pour l'etape 6b. Elles departagent deux
-; paquets du meme appareil ; a monter a chaque nouvelle version installee.
-DriverVer   = 10/25/2026,6.2.0.0
+; Date et version du paquet : 6.2 pour l'etape 6b, 6.3 pour 6c, et ainsi de
+; suite. A classement egal, Windows prend le paquet le plus recent, puis la
+; version la plus haute : a monter a chaque nouvelle version installee, pour
+; que la nouvelle l'emporte sur l'ancienne encore presente dans le magasin.
+DriverVer   = 10/25/2026,6.3.0.0
 ; Empeche un autre installateur de remplacer nos fichiers (doc WDK, PnpLockdown).
 PnpLockdown = 1
 

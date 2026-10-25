@@ -122,3 +122,27 @@ Pièges :
 - `pnputil /remove-device` (et `/disable-device`, `/enable-device`) affiche l'identifiant d'instance du scanner, numéro de série compris : vu sur une capture d'écran du premier essai, restée dans le fil du projet. `installer.ps1` filtre désormais la sortie de `pnputil`.
 - Windows Update a redémarré la VM pendant la séance (mise à jour déjà en cours) ; suspendu ensuite jusqu'au 29/11.
 - `.logopen` est une commande de WinDbg, à taper dans sa fenêtre Command (VM arrêtée par Break, puis `g`), pas dans PowerShell.
+
+### 6c : traces WPP et enregistreur IFR (25/10)
+
+Fichiers :
+- `noyau/wpp.h` : fournisseur WPP du pilote (GUID `{69D7FAD8-DB14-46C0-AD2F-35EE5136C07E}`), un drapeau par couche (`TRACE_PILOTE`, `TRACE_PNP`, puis `TRACE_USB`, `TRACE_BOT`, `TRACE_IOCTL`), fonction `Trace(NIVEAU, DRAPEAU, MSG, ...)` ; `WPP_DEBUG` recopie chaque message retenu vers le débogueur par `DbgPrintEx`.
+- `noyau/ds720d.c` : `WPP_INIT_TRACING` en tête de `DriverEntry`, `WPP_CLEANUP` au déchargement (ou si `WdfDriverCreate` échoue), `Trace` à la place de `DbgPrintEx`.
+- `Makefile` : `tracewpp -km -I…\WppConfig\Rev1 -scan:noyau\wpp.h -p:ds720d -odir:out\noyau` écrit `out\noyau\ds720d.tmh` ; `ENABLE_WPP_RECORDER=1` et `wpprecorder.lib` pour l'IFR, comme le projet MSBuild du WDK ; `WINNT=1` et `DEPRECATE_DDK_FUNCTIONS=1`, posés par le WDK pour tout pilote.
+- `noyau/ds720d.inf` : version 6.3.0.0. `installer.ps1 installer` installe une nouvelle version par-dessus l'ancienne (Windows préfère la plus haute), puis retire l'ancienne du magasin.
+
+Vérifié dans la VM (instantané `avant-6c`) :
+1. Mise à jour de 6.2 vers 6.3 (`oem11.inf`, l'ancien `oem10.inf` retiré) ; mêmes rappels qu'en 6b, recopiés en direct dans le journal de WinDbg.
+2. `!rcdrkd.rcdrlogdump ds720d` (après `.sympath+ …\out\noyau` et `.reload /f ds720d.sys`) : les cinq messages du tampon IFR, décodés à partir du PDB, avec le nom de la fonction émettrice.
+3. Vidage du noyau pris en direct dans la VM (Gestionnaire des tâches, Détails, clic droit sur System, vidage complet de la mémoire du noyau : 655 Mo, sans plantage), rapatrié par `invite.ps1`, lu sur Medabot par `kd.exe` du WDK (accord A4) : les mêmes cinq messages par `!rcdrkd.rcdrlogdump ds720d`, et le journal interne de KMDF par `!wdfkd.wdflogdump ds720d -f` (machine d'états PnP et alimentation, `IRP_MN_START_DEVICE`, passage en D0).
+
+Lire les traces :
+- En direct : le journal de WinDbg (`ds720d : …`), ou, VM arrêtée par Break, `!rcdrkd.rcdrlogdump ds720d` et `!wdfkd.wdflogdump ds720d -f`.
+- Après un plantage ou sur un vidage : `kd.exe -z VIDAGE -y "srv*C:\ProgramData\Dbg\sym*https://msdl.microsoft.com/download/symbols;C:\Users\morva\claude-chrome\ds720d-scan\out\noyau" -logo JOURNAL -c "!rcdrkd.rcdrlogdump ds720d; !wdfkd.wdflogdump ds720d -f; q"`. Le PDB doit être celui du `.sys` chargé : reconstruire change son identifiant.
+- Un vidage du noyau de la VM peut contenir la clé KDNET, gardée en mémoire par le noyau : il reste hors du dépôt et hors du fil, et s'efface après l'analyse (fait pour celui de 6c, dans la VM et sur Medabot ; seul le journal de `kd`, sans la clé, est gardé dans `ds720d-captures\vidages`).
+
+Pièges :
+- Sans `WINNT=1`, `evntrace.h` ne déclare rien en mode noyau (son contenu est sous `#if defined(_WINNT_) || defined(WINNT)`) : `TRACE_LEVEL_*` inconnus. Le projet MSBuild du WDK le définit pour tout pilote, notre `Makefile` ne le faisait pas.
+- Avec `/std:c17`, `cl` emploie le préprocesseur conforme : `MSG "\n", __VA_ARGS__` garde la virgule finale quand un message n'a pas d'argument. `, ## __VA_ARGS__` la retire.
+- `tracewpp` lit un source sans BOM dans la page de code de Windows : nos accents de commentaires y sont mal lus, sans effet ; les messages restent en ASCII.
+- `!wdfkd.wdflogdump ds720d` seul ne fait que proposer `-d` ou `-f` : le journal de KMDF se demande par `-f`.

@@ -113,6 +113,15 @@ out\essai_trace.exe: out\essai_trace.obj out\trace.obj
 # fonctions absentes des versions plus anciennes, sans le moindre avertissement.
 # _WIN32_WINNT suit (0x0A00, Windows 10), comme l'exige sdkddkver.h.
 #
+# Deux définitions que le projet MSBuild du WDK pose pour tout pilote
+# (WindowsDriver.Shared.Props et WindowsDriver.Common.props), ajoutées en 6c :
+#   WINNT=1                   evntrace.h n'ouvre son contenu qu'avec elle (ou
+#                             _WINNT_, propre à l'espace utilisateur) : sans
+#                             elle, ni TRACE_LEVEL_* ni rien d'ETW, d'où l'échec
+#                             de la première construction des traces WPP
+#   DEPRECATE_DDK_FUNCTIONS=1 signale à la compilation les fonctions du noyau
+#                             déclarées obsolètes (ExAllocatePoolWithTag…)
+#
 # Options propres au noyau :
 #   /kernel    code noyau : pas d'exceptions C++, pas de RTTI, définit _KERNEL_MODE
 #   /GS        cookie de pile, vérifié par BufferOverflowFastFailK.lib (noyau)
@@ -128,7 +137,7 @@ KCFLAGS = /nologo /utf-8 /std:c17 /W4 /WX /Zi /Od /kernel /GS /Gy /X \
 	/I"$(WDK)\Include\$(WDKVER)\km\crt" /I"$(WDK)\Include\$(WDKVER)\km" \
 	/I"$(WDK)\Include\$(WDKVER)\shared" /I"$(WDK)\Include\wdf\kmdf\$(KMDF_MAJ).$(KMDF_MIN)" \
 	/D_WIN64 /D_AMD64_ /DAMD64 /DKMDF_VERSION_MAJOR=$(KMDF_MAJ) /DKMDF_VERSION_MINOR=$(KMDF_MIN) \
-	/DNTDDI_VERSION=0x0A000008 /D_WIN32_WINNT=0x0A00 /Fdout\noyau\vc.pdb
+	/DNTDDI_VERSION=0x0A000008 /D_WIN32_WINNT=0x0A00 /DWINNT=1 /DDEPRECATE_DDK_FUNCTIONS=1 /Fdout\noyau\vc.pdb
 # Options de link pour un pilote :
 #   /DRIVER /SUBSYSTEM:NATIVE   image noyau, chargée par le gestionnaire d'E/S
 #   /ENTRY:FxDriverEntry        entrée de KMDF (WdfDriverEntry.lib) : lie le pilote
@@ -158,12 +167,30 @@ out\noyau\bonjour.sys: out\noyau\bonjour.obj
 # catalogue, signatures) se fait ensuite par noyau\paquet.ps1 : signer demande
 # le certificat du magasin de l'utilisateur, ce qui relève d'un script plutôt
 # que de la construction.
-out\noyau\ds720d.obj: noyau\ds720d.c
+#
+# Traces WPP (étape 6c, noyau\wpp.h) : tracewpp lit noyau\wpp.h (-scan) et
+# chaque source, et écrit un .tmh par source dans out\noyau, que le source
+# inclut (d'où /Iout\noyau). Options :
+#   -km          pilote noyau : modèle km-default.tpl
+#   -I…\Rev1     configuration et modèles livrés avec le WDK (defaultwpp.ini, *.tpl)
+#   -p:ds720d    nom de module des messages (sinon le nom du dossier courant)
+#   -odir:       dossier des .tmh générés, hors des sources
+# Comme le projet MSBuild du WDK quand l'enregistreur IFR est demandé
+# (WindowsDriver.Common.targets) : ENABLE_WPP_RECORDER=1 à la compilation et
+# wpprecorder.lib à l'édition de liens. Les formats des messages vont dans le
+# PDB (out\noyau\ds720d.pdb), où WinDbg les retrouve.
+TRACEWPP = "$(WDK)\bin\$(WDKVER)\x64\tracewpp.exe"
+WPPFLAGS = -km -I"$(WDK)\bin\$(WDKVER)\WppConfig\Rev1" -scan:noyau\wpp.h -p:ds720d -odir:out\noyau
+
+out\noyau\ds720d.tmh: noyau\ds720d.c noyau\wpp.h
 	@if not exist out\noyau mkdir out\noyau
-	cl $(KCFLAGS) /c /Fo$@ noyau\ds720d.c
+	$(TRACEWPP) $(WPPFLAGS) noyau\ds720d.c
+
+out\noyau\ds720d.obj: noyau\ds720d.c noyau\wpp.h out\noyau\ds720d.tmh
+	cl $(KCFLAGS) /DENABLE_WPP_RECORDER=1 /Iout\noyau /c /Fo$@ noyau\ds720d.c
 
 out\noyau\ds720d.sys: out\noyau\ds720d.obj
-	link $(KLDFLAGS) /OUT:$@ out\noyau\ds720d.obj $(KLIBS)
+	link $(KLDFLAGS) /OUT:$@ out\noyau\ds720d.obj $(KLIBS) wpprecorder.lib
 
 clean:
 	@if exist out rmdir /s /q out

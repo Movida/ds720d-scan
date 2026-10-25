@@ -84,12 +84,10 @@ function Montrer-Scanner {
     $s | Format-Table -AutoSize FriendlyName, Status | Out-String | Write-Host
 }
 
-# Nom publié (oemNN.inf) de notre paquet dans le magasin de pilotes, ou $null.
-function Paquet-Publie {
-    $p = Get-WindowsDriver -Online | Where-Object { (Split-Path -Leaf $_.OriginalFileName) -eq 'ds720d.inf' }
-    if (@($p).Count -gt 1) { throw "plusieurs paquets ds720d.inf dans le magasin : $(@($p).Driver -join ', ')" }
-    if ($p) { return $p.Driver }
-    return $null
+# Nos paquets dans le magasin de pilotes : nom publié (oemNN.inf) et version.
+# Il peut y en avoir deux le temps d'une mise à jour (action « installer »).
+function Paquets-Publies {
+    @(Get-WindowsDriver -Online | Where-Object { (Split-Path -Leaf $_.OriginalFileName) -eq 'ds720d.inf' })
 }
 
 switch ($Action) {
@@ -167,12 +165,24 @@ switch ($Action) {
         #    l'étape 2 (docs/winusb.md).
         # Montage automatique coupé dans la VM depuis 5d : si USBSTOR prenait
         # malgré tout le scanner, aucun volume ne serait monté.
+        #
+        # Mise à jour (depuis 6c) : la même suite installe une nouvelle version
+        # par-dessus l'ancienne. À la redétection, Windows préfère le paquet à
+        # la version la plus haute (DriverVer de l'INF, à monter à chaque
+        # version) ; l'ancien, devenu inutile, est ensuite retiré du magasin.
         Exiger-Admin
         if (-not (Scanner)) { throw 'scanner absent : le connecter à la VM (menu de VMware) avant' }
         Pnputil @('/add-driver', $paquetInf)
         Pnputil @('/remove-device', '/deviceid', $ID_SCANNER)
         Pnputil @('/scan-devices')
         Start-Sleep -Seconds 3
+        $enService = (Scanner | Get-PnpDeviceProperty DEVPKEY_Device_DriverInfPath).Data
+        foreach ($p in Paquets-Publies) {
+            if ($p.Driver -ne $enService) {
+                Write-Host "ancien paquet $($p.Driver) (version $($p.Version)) retiré du magasin"
+                Pnputil @('/delete-driver', $p.Driver)
+            }
+        }
         Montrer-Scanner
     }
     'cycle' {
@@ -192,9 +202,9 @@ switch ($Action) {
         # magasin ; le scanner retombe sur USBSTOR (montage coupé, aucun volume),
         # puis bascule_winusb.exe le passe sous WinUSB, comme à l'étape 2.
         Exiger-Admin
-        $oem = Paquet-Publie
-        if ($oem) { Pnputil @('/delete-driver', $oem, '/uninstall') }
-        else { Write-Host 'paquet ds720d absent du magasin' }
+        $paquets = Paquets-Publies
+        if ($paquets.Count -eq 0) { Write-Host 'paquet ds720d absent du magasin' }
+        foreach ($p in $paquets) { Pnputil @('/delete-driver', $p.Driver, '/uninstall') }
         Start-Sleep -Seconds 3
         & (Join-Path $PSScriptRoot 'bascule_winusb.exe') --oui
         if ($LASTEXITCODE -ne 0) { throw "bascule_winusb a échoué ($LASTEXITCODE)" }
