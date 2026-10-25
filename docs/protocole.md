@@ -154,6 +154,7 @@ Mesuré avec `banc/courbe_tons.py` : chaque point du BMP du pilote est mis en fa
 - **Décalages** : recto, BMP(x, y) = brut(x + 4, y + 11), comme en recto seul ; verso, BMP(x, y) = brut_miroir(x + 40, y + 146), soit les colonnes brutes 4 à 2 551 retournées : la même marge de 4 points, de l'autre côté. Identiques sur les deux feuilles.
 - **Retard du verso** : 146 − 11 = 135 lignes, 0,45 po à 300 ppp. C'est exactement l'allongement de la fenêtre (14,45 po au lieu de 14) : le pilote scanne 0,45 po de plus pour que le verso, vu plus tard, couvre encore 14 po (déduit). L'écart entre les deux capteurs le long du trajet du papier serait donc de 0,45 po, environ 11 mm (déduit).
 - Chaque face fait 35 blocs, 2 800 lignes (9,33 po) : la feuille était plus courte que la fenêtre ; le pilote complète jusqu'à 4 200 lignes avec son fond sombre, comme en recto.
+- **Rejoué** par `ds720d scan --recto-verso` à l'étape 4e (capture `4e-rv`, deux feuilles) : mêmes dépôts que la capture, une face par fichier, identiques aux faces extraites de notre capture. Entre deux feuilles, le dépôt 0x08 une fois par seconde jusqu'à `01 00`, comme le pilote (trames 122627 à 148287), puis toute la séquence repart.
 
 ## 7. Questions ouvertes
 

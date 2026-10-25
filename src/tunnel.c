@@ -51,7 +51,8 @@ static const struct {
 };
 
 /* Dépôts permis, recopiés de la capture 2a (pilote TWAIN, Button Manager
- * arrêté), avec la commande SCSI-2 qu'ils emballent (protocole.md §3). */
+ * arrêté) et, depuis l'étape 4, de 1e-gris-300-recto-verso et 1e-gris-600-recto
+ * (pilote TWAIN aussi), avec la commande SCSI-2 qu'ils emballent (protocole.md §3). */
 static const struct {
     uint8_t octets[16];
     uint32_t lg;
@@ -73,8 +74,12 @@ static const struct {
     {{0x16}, 10, "2a trame 2179"},
     /* SCAN (SCSI-2 §15.2.5), liste de fenêtres vide, contrôle 0x80 (bit vendeur). */
     {{0x1b, 0x00, 0x00, 0x00, 0x00, 0x80}, 10, "2a trame 2278"},
-    /* READ (SCSI-2 §15.2.4), type 0x00 image, qualificatif 0x0A0D, 0x1FEAE0 octets. */
+    /* READ (SCSI-2 §15.2.4), type 0x00 image, qualificatif 0x0A0D, 0x1FEAE0 octets
+     * (2a ; le même à 600 dpi, 1e-gris-600-recto trame 3033). */
     {{0x28, 0x00, 0x00, 0x00, 0x0a, 0x0d, 0x1f, 0xea, 0xe0, 0x00}, 10, "2a trame 2375"},
+    /* Étape 4e. Le même READ en recto-verso, pour 0x1E6000 octets (sens de la
+     * longueur inconnu, comme en 2a ; les blocs restent de 622 080 o). */
+    {{0x28, 0x00, 0x00, 0x00, 0x0a, 0x0d, 0x1e, 0x60, 0x00, 0x00}, 10, "1e-gris-300-recto-verso trame 2811"},
     /* RELEASE UNIT (SCSI-2 §10.2.9). */
     {{0x17}, 10, "2a trame 120250"},
 };
@@ -101,6 +106,50 @@ static const uint8_t set_window[89] = {
     0x64, 0x00, 0x64, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x0b, 0x01, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
+/* Étape 4e. SET WINDOW du recto-verso (1e-gris-300-recto-verso trame 2500), la
+ * fenêtre de 2a à cinq octets près (protocole.md §3 et §6) : longueur 17 340
+ * unités au lieu de 16 800 (octets 38-39, 14,45 po : le verso, vu 0,45 po plus
+ * tard, couvre encore 14 po), octets vendeur 7-8 à 0x21E0 au lieu de 0x1068
+ * (8 672 = deux faces de 4 336 lignes, déduit) et octet vendeur 17 à 0x10, le
+ * bit qui demande le recto-verso (déduit, et confirmé par l'alternance des
+ * blocs recto et verso qui suit dans la capture). */
+static const uint8_t set_window_rv[89] = {
+    0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4f, 0x00,             /* CDB */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x47,                         /* en-tête */
+    0x00, 0x00, 0x01, 0x2c, 0x01, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* id, auto, résolutions, X */
+    0x00, 0x00, 0x00, 0x00, 0x28, 0x80, 0x00, 0x00, 0x43, 0xbc,             /* Y, largeur, longueur */
+    0x80, 0x80, 0x80, 0x05, 0x08, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, /* luminosité … compression */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,                                     /* réservés */
+    0xff, 0x1d, 0xe0, 0xff, 0x00, 0x1e, 0x60, 0x21, 0xe0, 0x10, 0x00, 0x00, /* octets vendeur */
+    0x64, 0x00, 0x64, 0x00, 0x64, 0x10, 0x00, 0x00, 0x00, 0x0b, 0x01, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+/* Étape 4f. SET WINDOW à 600 dpi (1e-gris-600-recto trame 2718), la fenêtre de
+ * 2a à quatre octets près : résolution Y 600 (octets 22-23 ; X reste à 300) et
+ * octets vendeur 7-8 à 0x20D0 (8 400 lignes de 14 po à 600 ppp, déduit). */
+static const uint8_t set_window_600[89] = {
+    0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4f, 0x00,             /* CDB */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x47,                         /* en-tête */
+    0x00, 0x00, 0x01, 0x2c, 0x02, 0x58, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* id, auto, résolutions, X */
+    0x00, 0x00, 0x00, 0x00, 0x28, 0x80, 0x00, 0x00, 0x41, 0xa0,             /* Y, largeur, longueur */
+    0x80, 0x80, 0x80, 0x05, 0x08, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, /* luminosité … compression */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,                                     /* réservés */
+    0xff, 0x1d, 0xe0, 0xff, 0x00, 0x1e, 0x60, 0x20, 0xd0, 0x10, 0x00, 0x00, /* octets vendeur */
+    0x64, 0x00, 0x64, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x0b, 0x01, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+/* Les dépôts de plus de 16 octets, chacun avec sa trame. */
+static const struct {
+    const uint8_t *octets;
+    uint32_t lg;
+    const char *source;
+} depots_longs[] = {
+    {send_83, sizeof send_83, "2a trame 1961"},
+    {set_window, sizeof set_window, "2a trame 2067"},
+    {set_window_rv, sizeof set_window_rv, "1e-gris-300-recto-verso trame 2500"},
+    {set_window_600, sizeof set_window_600, "1e-gris-600-recto trame 2718"},
+};
 
 static int lecture_permise(const uint8_t s[3], uint32_t lg)
 {
@@ -112,9 +161,9 @@ static int lecture_permise(const uint8_t s[3], uint32_t lg)
 
 static int depot_permis(const uint8_t *depot, uint32_t lg)
 {
-    if ((lg == sizeof send_83 && memcmp(depot, send_83, lg) == 0) ||
-        (lg == sizeof set_window && memcmp(depot, set_window, lg) == 0))
-        return 1;
+    for (size_t i = 0; i < sizeof depots_longs / sizeof depots_longs[0]; i++)
+        if (depots_longs[i].lg == lg && memcmp(depots_longs[i].octets, depot, lg) == 0)
+            return 1;
     for (size_t i = 0; i < sizeof depots_permis / sizeof depots_permis[0]; i++)
         if (depots_permis[i].lg == lg && memcmp(depots_permis[i].octets, depot, lg) == 0)
             return 1;

@@ -7,7 +7,7 @@
  *   ds720d inquiry [--trace FICHIER]
  *   ds720d etat [--trace FICHIER]
  *   ds720d papier [--trace FICHIER]
- *   ds720d scan --sortie FICHIER.brut [--trace FICHIER]
+ *   ds720d scan --sortie FICHIER.brut [--recto-verso | --ppp 600] [--feuilles N] [--trace FICHIER]
  *
  * Chaque commande refait les précédentes, dans l'ordre où Windows énumère le
  * scanner (1b) : descripteurs, GET_MAX_LUN, puis INQUIRY ; « etat » y ajoute la
@@ -15,7 +15,11 @@
  * « papier » y ajoute les questions que pose le pilote TWAIN avant un scan
  * (présence du papier), par des commandes de lecture déposées dans le tunnel ;
  * « scan » rejoue ensuite le scan d'une page de 2a et écrit l'image brute
- * (docs/protocole.md §5) dans FICHIER.brut, hors du dépôt.
+ * (docs/protocole.md §5) dans FICHIER.brut, hors du dépôt. Depuis l'étape 4,
+ * --recto-verso rejoue 1e-gris-300-recto-verso (une face par fichier,
+ * FICHIER-recto.brut et FICHIER-verso.brut) et --ppp 600 rejoue
+ * 1e-gris-600-recto ; --feuilles N attend et scanne N feuilles d'affilée
+ * (FICHIER-p1….brut).
  * Pourquoi enchaîner plutôt qu'isoler chaque requête : GET_MAX_LUN a besoin du
  * numéro d'interface lu dans les descripteurs, et la trace se compare alors d'un
  * bloc à la référence.
@@ -24,9 +28,10 @@
  * trame de la capture de référence où le pilote Windows ou Brother l'envoie
  * lui-même. Rien n'est envoyé qui n'ait été observé dans 1b-enumeration.pcap
  * (énumération, prise de contact) ou dans 2a-gris-300-recto-sans-bm.pcap (scan),
+ * 1e-gris-300-recto-verso.pcap et 1e-gris-600-recto.pcap (scans de l'étape 4),
  * sauf la Reset Recovery de bot.c, documentée par la spec Bulk-Only (BOT §5.3.4)
  * et réservée aux erreurs de transport, et RELEASE UNIT après une erreur de scan
- * (palliatif, voir scanner_page).
+ * (palliatif, voir scanner_feuille).
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -35,6 +40,7 @@
 #include <io.h>
 #include <share.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <string.h>
 
@@ -327,6 +333,38 @@ static const uint8_t depot_scan[10] = {0x1b, 0x00, 0x00, 0x00, 0x00, 0x80};
 static const uint8_t depot_lire_image[10] = {0x28, 0x00, 0x00, 0x00, 0x0a, 0x0d, 0x1f, 0xea, 0xe0, 0x00};
 static const uint8_t depot_release[10] = {0x17};
 
+/* Étape 4. Fenêtre et READ du recto-verso (1e-gris-300-recto-verso, trames 2500
+ * et 2811) et fenêtre du 600 dpi (1e-gris-600-recto trame 2718, dont le READ est
+ * celui de 2a, trame 3033). Différences avec 2a : tunnel.c, protocole.md §3 et §6. */
+static const uint8_t depot_fenetre_rv[89] = {
+    0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x47,
+    0x00, 0x00, 0x01, 0x2c, 0x01, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x80,
+    0x00, 0x00, 0x43, 0xbc, 0x80, 0x80, 0x80, 0x05, 0x08, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xff, 0x1d, 0xe0, 0xff, 0x00, 0x1e, 0x60, 0x21, 0xe0, 0x10, 0x00, 0x00, 0x64, 0x00,
+    0x64, 0x00, 0x64, 0x10, 0x00, 0x00, 0x00, 0x0b, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+static const uint8_t depot_lire_image_rv[10] = {0x28, 0x00, 0x00, 0x00, 0x0a, 0x0d, 0x1e, 0x60, 0x00, 0x00};
+static const uint8_t depot_fenetre_600[89] = {
+    0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x47,
+    0x00, 0x00, 0x01, 0x2c, 0x02, 0x58, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x80,
+    0x00, 0x00, 0x41, 0xa0, 0x80, 0x80, 0x80, 0x05, 0x08, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xff, 0x1d, 0xe0, 0xff, 0x00, 0x1e, 0x60, 0x20, 0xd0, 0x10, 0x00, 0x00, 0x64, 0x00,
+    0x64, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x0b, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
+/* Les trois façons de scanner qu'une capture montre de bout en bout. Pas de
+ * recto-verso à 600 dpi : aucune capture, donc aucune fenêtre à rejouer
+ * (tunnel.c la refuserait de toute façon). */
+struct mode_scan {
+    const char *nom;
+    const uint8_t *fenetre;   /* SET WINDOW, 89 octets */
+    const uint8_t *lire_image; /* READ image, 10 octets */
+    int recto_verso;          /* 1 : les blocs alternent recto et verso (protocole.md §6) */
+};
+static const struct mode_scan mode_recto = {"recto 300 dpi (2a)", depot_fenetre, depot_lire_image, 0};
+static const struct mode_scan mode_rv = {"recto-verso 300 dpi (1e-gris-300-recto-verso)", depot_fenetre_rv,
+                                         depot_lire_image_rv, 1};
+static const struct mode_scan mode_600 = {"recto 600 dpi (1e-gris-600-recto)", depot_fenetre_600, depot_lire_image,
+                                          0};
+
 /* Délai sans nouveau bloc au-delà duquel on abandonne. Dans 2a, le premier bloc
  * arrive 1,9 s après le dépôt de READ (908 sondages), les suivants toutes les
  * 0,18 s ; 30 s laissent une large marge sans attendre indéfiniment. */
@@ -352,14 +390,18 @@ static BOOL WINAPI sur_ctrl_c(DWORD evenement)
 }
 
 /* Lit les blocs d'image jusqu'à la fin de page (protocole.md §4) et les écrit
- * dans f. Renvoie le nombre d'octets écrits, ou -1. */
-static long long lire_page(FILE *f)
+ * dans faces[0], ou, en recto-verso, alternativement dans faces[0] (recto) et
+ * faces[1] (verso) : le scanner commence par un bloc recto et alterne, sans rien
+ * dans l'état du bloc qui dise la face (protocole.md §6). Les octets sont écrits
+ * tels quels, le verso encore en miroir : le redresser est l'affaire du rendu
+ * (convertir --verso). Renvoie le nombre d'octets écrits, ou -1. */
+static long long lire_page(FILE *faces[2], const struct mode_scan *m)
 {
     static uint8_t tampon[TAILLE_LECTURE];
     long long total = 0;
     int blocs = 0;
     /* Premier READ image, 2a trame 2373 : dépôt sans lecture de statut. */
-    if (tunnel_deposer(depot_lire_image, sizeof depot_lire_image) != 0)
+    if (tunnel_deposer(m->lire_image, 10) != 0)
         return -1;
     ULONGLONG depuis = GetTickCount64();
     for (;;) {
@@ -387,6 +429,7 @@ static long long lire_page(FILE *f)
         /* Bloc prêt (2a trame 52307) : lectures 0xC3 de 64 Kio depuis l'adresse
          * annoncée, la dernière plus courte (trames 52325 à 52394). */
         uint32_t adresse = b.adresse;
+        FILE *f = faces[m->recto_verso ? blocs % 2 : 0];
         for (unsigned long long reste = b.volume; reste;) {
             uint32_t n = reste > TAILLE_LECTURE ? TAILLE_LECTURE : (uint32_t)reste;
             if (tampon_lire(adresse, tampon, n) != 0)
@@ -404,86 +447,178 @@ static long long lire_page(FILE *f)
             return -1;
         }
         /* Statut du READ (trames 52424 à 52436), puis READ suivant (52478). */
-        if (tunnel_statut() != 0 || tunnel_deposer(depot_lire_image, sizeof depot_lire_image) != 0)
+        if (tunnel_statut() != 0 || tunnel_deposer(m->lire_image, 10) != 0)
             return -1;
         depuis = GetTickCount64();
+    }
+    if (m->recto_verso && blocs % 2) {
+        /* 70 blocs par feuille, 35 par face, dans 1e-gris-300-recto-verso. */
+        fprintf(stderr, "recto-verso : %d blocs, nombre impair jamais observé\n", blocs);
+        return -1;
     }
     trace_note("fin de page : %d blocs, %lld octets", blocs, total);
     return total;
 }
 
-/* Scan d'une page en gris 300 dpi, rejoué de la capture 2a (pilote TWAIN,
- * Button Manager arrêté), trames 1753 à 120868 : les réglages (trois SEND
- * vendeur, SET WINDOW), RESERVE UNIT, SCAN, la boucle de lecture, puis
- * RELEASE UNIT. Chaque dépôt est identique à celui de 2a à l'octet près. La
- * fenêtre demande du RVB : le gris se tire du plan vert, sur le PC (étape 3f).
+/* Scan d'une feuille, rejoué de la capture du mode choisi (2a pour le recto à
+ * 300 dpi : pilote TWAIN, Button Manager arrêté, trames 1753 à 120868) : les
+ * réglages (trois SEND vendeur, SET WINDOW), RESERVE UNIT, SCAN, la boucle de
+ * lecture, puis RELEASE UNIT. Chaque dépôt est identique, à l'octet près, à
+ * celui de la capture. La fenêtre demande du RVB : le gris se tire du plan vert,
+ * sur le PC (étape 3f).
  *
  * Accord écrit de David du 25/10/2026 (« go », en réponse à la demande du fil
  * de l'étape 3) pour les trois SEND vendeur, dont l'effet exact reste inconnu
  * (CLAUDE.md) : le pilote TWAIN les envoie avec ces octets avant chaque scan,
- * dans toutes les captures.
+ * dans toutes les captures, recto-verso et 600 dpi compris.
  *
  * Dès que RESERVE UNIT a été tenté, toute erreur tente RELEASE UNIT avant de
  * rendre la main, pour ne pas laisser le scanner réservé. C'est un palliatif :
  * aucune capture ne montre RELEASE après une erreur, ni au milieu d'une page
  * (READ en attente, feuille engagée) ; SCSI-2 ne fait pas une erreur d'un
  * RELEASE sans réservation, et c'est la commande que le pilote Brother envoie
- * pour finir. Ctrl+C passe par le même chemin (sur_ctrl_c). */
-static int scanner_page(const char *sortie)
+ * pour finir. Ctrl+C passe par le même chemin (sur_ctrl_c).
+ *
+ * faces[0] reçoit le recto, faces[1] le verso en recto-verso. Renvoie le
+ * nombre d'octets lus, 0 s'il n'y a pas de feuille, -1 en cas d'erreur. */
+static long long scanner_feuille(FILE *faces[2], const struct mode_scan *m)
 {
-    /* Le fichier ne doit pas exister : on n'écrase jamais une image. */
-    int fd;
-    if (_sopen_s(&fd, sortie, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _SH_DENYWR, _S_IREAD | _S_IWRITE) != 0) {
-        fprintf(stderr, "impossible de créer %s (existe-t-il déjà ?)\n", sortie);
-        return -1;
-    }
-    FILE *f = _fdopen(fd, "wb");
-    if (!f) {
-        _close(fd);
-        return -1;
-    }
     int r = lire_papier();
-    if (r == 0)
+    if (r == 0) {
         fprintf(stderr, "pas de feuille dans le chargeur\n");
-    /* Réglages, trames 1753 à 2171 : chacun déposé puis son statut lu. */
+        return 0;
+    }
+    /* Réglages, 2a trames 1753 à 2171 : chacun déposé puis son statut lu. */
     if (r != 1 || tunnel_commande(depot_send_95, sizeof depot_send_95, NULL, 0) != 0 ||
         tunnel_commande(depot_send_96, sizeof depot_send_96, NULL, 0) != 0 ||
         tunnel_commande(depot_send_83, sizeof depot_send_83, NULL, 0) != 0 ||
-        tunnel_commande(depot_fenetre, sizeof depot_fenetre, NULL, 0) != 0) {
-        fclose(f);
-        remove(sortie); /* rien n'a été écrit : le nom reste libre pour un nouvel essai */
+        tunnel_commande(m->fenetre, 89, NULL, 0) != 0)
         return -1;
-    }
     /* RESERVE UNIT (trame 2177), SCAN (2276), lecture, RELEASE (120248). RELEASE
      * part dès que RESERVE a été tenté, même si son statut n'a pas été lu. */
     SetConsoleCtrlHandler(sur_ctrl_c, TRUE);
     long long total = -1;
     if (tunnel_commande(depot_reserve, sizeof depot_reserve, NULL, 0) == 0 &&
         tunnel_commande(depot_scan, sizeof depot_scan, NULL, 0) == 0)
-        total = lire_page(f);
+        total = lire_page(faces, m);
     int liberee = tunnel_commande(depot_release, sizeof depot_release, NULL, 0) == 0;
     SetConsoleCtrlHandler(sur_ctrl_c, FALSE);
-    if (fclose(f) != 0)
-        total = -1;
-    if (!liberee)
+    if (!liberee) {
         fprintf(stderr, "RELEASE UNIT a échoué : débrancher et rebrancher le scanner\n");
-    if (total < 0)
-        fprintf(stderr, "%s : image incomplète ou absente, à ne pas convertir telle quelle\n", sortie);
-    if (total < 0 || !liberee)
         return -1;
-    printf("%s : %lld octets, %lld lignes de 3 × 2592 points\n", sortie, total, total / 7776);
+    }
+    return total;
+}
+
+/* Attente de la feuille suivante, comme le pilote TWAIN entre deux feuilles
+ * (1e-gris-300-recto-verso, trames 122627 à 148287) : le dépôt 0x08, une fois
+ * par seconde, jusqu'à la réponse 01 00 (feuille engagée). Le pilote y a
+ * attendu 28 s ; on abandonne après ATTENTE_FEUILLE_S. Renvoie 1 si une
+ * feuille est arrivée, 0 sinon, -1 en cas d'erreur. */
+#define ATTENTE_FEUILLE_S 60
+static int attendre_feuille(void)
+{
+    printf("glissez la feuille suivante (%d s au plus)\n", ATTENTE_FEUILLE_S);
+    fflush(stdout);
+    for (int s = 0; s < ATTENTE_FEUILLE_S && !interrompu; s++) {
+        uint8_t d[2];
+        Sleep(1000); /* intervalle du pilote : 1,0 s entre les trames 122627, 123538 et 124457 */
+        if (tunnel_commande(depot_papier, sizeof depot_papier, d, sizeof d) != 0)
+            return -1;
+        if (d[0] == 0x01 && d[1] == 0x00)
+            return 1;
+        if (d[0] != 0x00 || d[1] != 0x00) {
+            fprintf(stderr, "0x08 : réponse %02x %02x jamais observée\n", d[0], d[1]);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* Fichier brut d'une face, créé sans jamais en écraser un : le nom donné tel
+ * quel pour une seule feuille en recto seul (comme à l'étape 3), sinon le nom
+ * sans « .brut », suivi de -pN pour la feuille N si l'on en scanne plusieurs, et
+ * de -recto ou -verso en recto-verso, puis « .brut ». */
+static FILE *creer_face(const char *sortie, int feuille, int feuilles, int recto_verso, int verso, char *nom,
+                        size_t lg)
+{
+    size_t base = strlen(sortie);
+    if (base >= 5 && _stricmp(sortie + base - 5, ".brut") == 0)
+        base -= 5;
+    char p[16] = "", f[8] = "";
+    if (feuilles > 1)
+        sprintf_s(p, sizeof p, "-p%d", feuille);
+    if (recto_verso)
+        strcpy_s(f, sizeof f, verso ? "-verso" : "-recto");
+    if (feuilles == 1 && !recto_verso)
+        strcpy_s(nom, lg, sortie);
+    else if (sprintf_s(nom, lg, "%.*s%s%s.brut", (int)base, sortie, p, f) < 0)
+        return NULL;
+    int fd;
+    if (_sopen_s(&fd, nom, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _SH_DENYWR, _S_IREAD | _S_IWRITE) != 0) {
+        fprintf(stderr, "impossible de créer %s (existe-t-il déjà ?)\n", nom);
+        return NULL;
+    }
+    FILE *fichier = _fdopen(fd, "wb");
+    if (!fichier)
+        _close(fd);
+    return fichier;
+}
+
+/* Scan de une à plusieurs feuilles dans le mode choisi. Entre deux feuilles, on
+ * attend la suivante comme le pilote TWAIN, puis toute la séquence repart :
+ * présence du papier, réglages, RESERVE, SCAN… (1e-gris-300-recto-verso, de la
+ * trame 148287 à 149859, la même suite que pour la première feuille). */
+static int scanner_feuilles(const char *sortie, const struct mode_scan *m, int feuilles)
+{
+    trace_note("scan : %s, %d feuille(s)", m->nom, feuilles);
+    for (int feuille = 1; feuille <= feuilles; feuille++) {
+        if (feuille > 1) {
+            int r = attendre_feuille();
+            if (r <= 0) {
+                if (r == 0)
+                    fprintf(stderr, "pas de feuille %d : arrêt après %d feuille(s)\n", feuille, feuille - 1);
+                return r == 0 && feuille > 1 ? 0 : -1;
+            }
+        }
+        char noms[2][MAX_PATH];
+        FILE *faces[2] = {NULL, NULL};
+        int nfaces = m->recto_verso ? 2 : 1, ok = 1;
+        for (int i = 0; i < nfaces && ok; i++)
+            ok = (faces[i] = creer_face(sortie, feuille, feuilles, m->recto_verso, i, noms[i], MAX_PATH)) != NULL;
+        long long total = ok ? scanner_feuille(faces, m) : -1;
+        for (int i = 0; i < nfaces; i++)
+            if (faces[i] && fclose(faces[i]) != 0)
+                total = -1;
+        if (total <= 0) {
+            for (int i = 0; i < nfaces; i++) {
+                if (!faces[i])
+                    continue;
+                if (total == 0)
+                    remove(noms[i]); /* rien n'a été écrit : le nom reste libre pour un nouvel essai */
+                else
+                    fprintf(stderr, "%s : image incomplète ou absente, à ne pas convertir telle quelle\n", noms[i]);
+            }
+            return -1;
+        }
+        for (int i = 0; i < nfaces; i++)
+            printf("%s : %lld lignes de 3 × 2592 points%s\n", noms[i], total / nfaces / 7776,
+                   m->recto_verso ? (i ? " (verso, en miroir : convertir --verso)" : " (recto)") : "");
+    }
     return 0;
 }
 
 static void usage(void)
 {
     fprintf(stderr, "usage : ds720d descripteurs|lun|inquiry|etat|papier [--trace FICHIER]\n"
-                    "        ds720d scan --sortie FICHIER.brut [--trace FICHIER]\n");
+                    "        ds720d scan --sortie FICHIER.brut [--recto-verso | --ppp 600] [--feuilles N]\n"
+                    "                    [--trace FICHIER]\n");
 }
 
 int main(int argc, char **argv)
 {
     const char *commande = NULL, *chemin_trace = NULL, *sortie = NULL;
+    int recto_verso = 0, ppp = 300, feuilles = 1;
     SetConsoleOutputCP(CP_UTF8); /* la trace est en UTF-8 */
 
     for (int i = 1; i < argc; i++) {
@@ -491,6 +626,12 @@ int main(int argc, char **argv)
             chemin_trace = argv[++i];
         else if (strcmp(argv[i], "--sortie") == 0 && i + 1 < argc)
             sortie = argv[++i];
+        else if (strcmp(argv[i], "--recto-verso") == 0)
+            recto_verso = 1;
+        else if (strcmp(argv[i], "--ppp") == 0 && i + 1 < argc)
+            ppp = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--feuilles") == 0 && i + 1 < argc)
+            feuilles = atoi(argv[++i]);
         else if (!commande)
             commande = argv[i];
         else {
@@ -513,6 +654,11 @@ int main(int argc, char **argv)
         niveau = 5;
     else if (commande && strcmp(commande, "scan") == 0 && sortie)
         niveau = 6;
+    /* Recto-verso à 600 dpi : aucune capture, donc refusé (voir mode_scan). */
+    if ((ppp != 300 && ppp != 600) || (recto_verso && ppp == 600) || feuilles < 1 || feuilles > 50 ||
+        (niveau != 6 && (recto_verso || ppp != 300 || feuilles != 1)))
+        niveau = 0;
+    const struct mode_scan *mode = recto_verso ? &mode_rv : ppp == 600 ? &mode_600 : &mode_recto;
     if (!niveau) {
         usage();
         return 2;
@@ -536,7 +682,7 @@ int main(int argc, char **argv)
     if (r == 0 && niveau >= 4)
         r = lire_etat();
     if (r == 0 && niveau == 6)
-        r = scanner_page(sortie);
+        r = scanner_feuilles(sortie, mode, feuilles);
     if (r == 0 && niveau == 5) {
         int papier = lire_papier();
         if (papier >= 0)
