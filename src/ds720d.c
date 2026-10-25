@@ -3,6 +3,12 @@
  *
  * Usage :
  *   ds720d descripteurs [--trace FICHIER]
+ *   ds720d lun [--trace FICHIER]
+ *
+ * Chaque commande refait les précédentes, dans l'ordre où Windows énumère le
+ * scanner (1b) : descripteurs, puis GET_MAX_LUN. Pourquoi enchaîner plutôt
+ * qu'isoler chaque requête : GET_MAX_LUN a besoin du numéro d'interface lu dans
+ * les descripteurs, et la trace se compare alors d'un bloc à la référence.
  *
  * Règle du projet : chaque requête envoyée cite sa source, section de spec et
  * trame de la capture de référence où le pilote Windows l'envoie lui-même.
@@ -19,8 +25,10 @@
 
 /* Ce que l'on retient des descripteurs pour la suite. */
 static struct {
+    uint8_t interface;       /* bInterfaceNumber de l'interface Bulk-Only */
     uint8_t ep_in, ep_out;   /* endpoints bulk du transport Bulk-Only */
     uint16_t max_in, max_out;
+    uint8_t max_lun;         /* plus haut LUN, rendu par GET_MAX_LUN */
 } scanner;
 
 static uint16_t le16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
@@ -93,8 +101,11 @@ static int lire_descripteurs(void)
     int dans_bot = 0;
     for (size_t i = 0; i + 2 <= (size_t)n && d[i] >= 2; i += d[i]) {
         const uint8_t *p = d + i;
-        if (p[1] == 4 && p[0] >= 9)
+        if (p[1] == 4 && p[0] >= 9) {
             dans_bot = p[5] == 0x08 && p[6] == 0x06 && p[7] == 0x50;
+            if (dans_bot)
+                scanner.interface = p[2];
+        }
         else if (p[1] == 5 && p[0] >= 7 && dans_bot && (p[3] & 3) == 2) {
             if (p[2] & 0x80) {
                 scanner.ep_in = p[2];
@@ -127,9 +138,34 @@ static int lire_descripteurs(void)
     return 0;
 }
 
+/* GET_MAX_LUN, requête de classe Mass Storage Bulk-Only (BOT §3.2) :
+ *   bmRequestType 0xA1 (appareil vers hôte, classe, destinataire l'interface)
+ *   bRequest      0xFE (Get Max LUN)
+ *   wValue        0
+ *   wIndex        numéro de l'interface
+ *   wLength       1 : la réponse est un seul octet, le plus haut numéro de LUN
+ * Windows l'envoie trame 19223 de 1b et reçoit 0 (trame 19224) : un seul LUN.
+ * BOT §3.2 permet à un appareil sans LUN multiples de répondre par un STALL ; on
+ * s'arrêterait alors en le signalant, sans rien tenter d'autre. */
+static int lire_max_lun(void)
+{
+    uint8_t s[8] = {0xA1, 0xFE, 0x00, 0x00, scanner.interface, 0x00, 0x01, 0x00};
+    uint8_t lun = 0;
+    if (periph_controle(s, &lun) != 1) {
+        fprintf(stderr, "GET_MAX_LUN sans réponse d'un octet\n");
+        return -1;
+    }
+    if (lun > 15) { /* BOT §3.2 : de 0 à 15 */
+        fprintf(stderr, "plus haut LUN %u hors de la plage 0 à 15\n", lun);
+        return -1;
+    }
+    scanner.max_lun = lun;
+    return 0;
+}
+
 static void usage(void)
 {
-    fprintf(stderr, "usage : ds720d descripteurs [--trace FICHIER]\n");
+    fprintf(stderr, "usage : ds720d descripteurs|lun [--trace FICHIER]\n");
 }
 
 int main(int argc, char **argv)
@@ -147,7 +183,13 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    if (!commande || strcmp(commande, "descripteurs") != 0) {
+    /* Niveau atteint par la commande : 1 descripteurs, 2 GET_MAX_LUN. */
+    int niveau = 0;
+    if (commande && strcmp(commande, "descripteurs") == 0)
+        niveau = 1;
+    else if (commande && strcmp(commande, "lun") == 0)
+        niveau = 2;
+    if (!niveau) {
         usage();
         return 2;
     }
@@ -158,6 +200,11 @@ int main(int argc, char **argv)
     int r = periph_ouvrir();
     if (r == 0)
         r = lire_descripteurs();
+    if (r == 0 && niveau >= 2) {
+        r = lire_max_lun();
+        if (r == 0)
+            trace_note("plus haut LUN : %u", scanner.max_lun);
+    }
     periph_fermer();
     trace_fermer();
     return r == 0 ? 0 : 1;

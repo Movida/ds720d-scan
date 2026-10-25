@@ -136,3 +136,4 @@ Même méthode (tâche planifiée, `-s 262144`), mais c'est notre programme qui 
 | --- | --- | --- | --- |
 | `2d-descripteurs` | `ds720d descripteurs`, juste après la bascule | aucune trame du scanner (piège ci-dessus) | `F08FAB1899BB16464C557A0EB3AEF87A0EAF61D78FBC13ADA76497B167972173` |
 | `2d-descripteurs-2` | `ds720d descripteurs`, après rebranchement (adresse 31) | 5 SETUP, 0 erreur ; concordance parfaite avec notre trace et avec 1b (trames 19191 à 19206) | `28194EAA734C05FB82D50CD83751229E5E20E169E6EBD5BD287369315BC8FD7F` |
+| `2e-lun` | `ds720d lun` : descripteurs puis GET_MAX_LUN | 6 SETUP, 0 erreur, plus haut LUN 0 ; concordance parfaite avec notre trace et avec 1b (trames 19191 à 19206, 19223, 19224) | `ABC4ADD2AC07943AA70B29BC00C688967FDB7543EF9BD5C9805685E4BDC299A7` |
