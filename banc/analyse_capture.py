@@ -4,7 +4,9 @@ Lit un fichier .pcap produit par USBPcapCMD et décode, couche par couche :
   1. le format pcap (en-tête global, en-têtes d'enregistrement) ;
   2. l'en-tête USBPcap de chaque paquet (URB vu par le filtre USBPcap) ;
   3. les transferts de contrôle (paquet SETUP, USB 2.0 §9.3) et les descripteurs (§9.6) ;
-  4. le transport Bulk-Only (CBW BOT §5.1, CSW BOT §5.2) et les commandes SCSI encapsulées.
+  4. le transport Bulk-Only (CBW BOT §5.1, CSW BOT §5.2) et les commandes SCSI encapsulées ;
+  5. le protocole vendeur du DS-720D : tunnel 0xC5, commandes de scanner SCSI-2
+     emballées, lectures d'image 0xC3 (docs/protocole.md).
 
 La sortie suit le « format de trace commun » (docs/format-trace.md) : c'est le même
 format que produira notre propre code C, pour comparer les deux ligne à ligne.
@@ -341,6 +343,222 @@ def nom_opcode(op):
 
 
 # ---------------------------------------------------------------------------
+# 5. Protocole vendeur du DS-720D (étape 3a ; détail et trames dans docs/protocole.md)
+#    Il n'existe pas de spécification publique de ce protocole : tout ce qui suit
+#    est lu dans les captures du pilote Brother. Ce qui n'est que déduit est dit
+#    tel quel dans les commentaires et dans docs/protocole.md.
+#
+#    0xC3 et 0xC5 sont du groupe 6 des codes d'opération, réservé aux fabricants
+#    (SCSI-2 §7.2.1). Leur CDB de 16 octets a la même forme dans toutes les captures :
+#      octets 0-1    opcode, puis 0x07 (constant, sens inconnu)
+#      octets 2-5    adresse dans la mémoire du scanner, gros-boutiste (0 pour 0xC5)
+#      octets 6-9    longueur des données, gros-boutiste, égale à celle du CBW
+#      octets 10-12  sélecteur (0 pour 0xC3)
+#      octets 13-15  0
+#    0xC5 est un tunnel : le sélecteur 02 03 00 y dépose une commande du jeu
+#    « Scanner devices » de SCSI-2 (chapitre 15), les autres sélecteurs lisent la
+#    réponse ou l'état. 0xC3 lit un bloc d'image à l'adresse que l'état annonce.
+# ---------------------------------------------------------------------------
+
+OP_TUNNEL, OP_LECTURE_TAMPON = 0xC5, 0xC3
+
+# Troisième octet des sélecteurs 02 01 k et 02 02 k : quelle réponse on lit.
+# Déduit de l'ordre des échanges (docs/protocole.md) : k=0 suit une commande qui
+# rend des données, k=1 suit toutes les commandes, k=2 suit READ image. k=3 et
+# k=4 se lisent sans commande déposée et rendent 04 f9 et 60 e2, l'idVendor et
+# l'idProduct du descripteur DEVICE (vérifié dans 1b, trame 20896).
+GENRES_REPONSE = {0: "données", 1: "statut", 2: "bloc d'image",
+                  3: "identifiant fabricant", 4: "identifiant produit"}
+
+
+def decrire_selecteur(sel):
+    """Nom d'un sélecteur de 0xC5 (octets 10 à 12 du CDB)."""
+    a, b, k = sel
+    if (a, b, k) == (0xFF, 0x02, 0):
+        return "signature"
+    if a == 0xFF and 0x03 <= b <= 0x06 and k == 0:
+        return "sondage d'état"
+    if (a, b, k) == (0x02, 0x03, 0):
+        return "dépôt d'une commande"
+    if a == 0x02 and b in (0x01, 0x02) and k in GENRES_REPONSE:
+        quoi = "en-tête de réponse" if b == 0x01 else "réponse"
+        return f"{quoi}, {GENRES_REPONSE[k]}"
+    return "inconnu"
+
+
+def decrire_cdb_vendeur(cdb):
+    """Ligne de détail sous le CBW d'une commande 0xC3 ou 0xC5. Les écarts à la
+    forme connue sont signalés par « !! » : un CDB qui en sort est du jamais vu."""
+    if len(cdb) != 16:
+        return [f"!! CDB vendeur de {len(cdb)} o (attendu 16)"]
+    op = cdb[0]
+    adresse, longueur = struct.unpack(">II", cdb[2:10])
+    anomalies = []
+    if cdb[1] != 0x07:
+        anomalies.append(f"octet 1 = 0x{cdb[1]:02X} (attendu 07)")
+    if any(cdb[13:16]):
+        anomalies.append("octets 13-15 non nuls")
+    if op == OP_TUNNEL:
+        if adresse:
+            anomalies.append(f"adresse 0x{adresse:08X} (attendue 0)")
+        sel = cdb[10:13]
+        texte = f"tunnel 0xC5, sélecteur {sel.hex(' ')} : {decrire_selecteur(sel)}"
+    else:
+        if any(cdb[10:13]):
+            anomalies.append("octets 10-12 non nuls")
+        texte = f"lecture 0xC3 à l'adresse 0x{adresse:08X}"
+    return [texte + f", {longueur} o" + "".join(f"  !! {a}" for a in anomalies)]
+
+
+# Commandes du jeu « Scanner devices », SCSI-2 table 277 (§15.2), avec la
+# sous-clause qui les définit. 0x2A y est SEND, pas WRITE(10) : dans le tunnel,
+# il envoie des paramètres au scanner, il n'écrit pas de secteur.
+COMMANDES_SCANNER = {
+    0x00: ("TEST UNIT READY", "§8.2.16"), 0x03: ("REQUEST SENSE", "§8.2.14"),
+    0x12: ("INQUIRY", "§8.2.5"), 0x16: ("RESERVE UNIT", "§10.2.10"),
+    0x17: ("RELEASE UNIT", "§10.2.9"), 0x1B: ("SCAN", "§15.2.5"),
+    0x24: ("SET WINDOW", "§15.2.7"), 0x25: ("GET WINDOW", "§15.2.2"),
+    0x28: ("READ", "§15.2.4"), 0x2A: ("SEND", "§15.2.6"),
+    0x31: ("OBJECT POSITION", "§15.2.3"), 0x34: ("GET DATA BUFFER STATUS", "§15.2.1"),
+}
+# Ce qui, emballé, toucherait au firmware ou à un support : WRITE BUFFER (SCSI-2
+# §8.2.17) télécharge du microcode ; les autres n'ont rien à faire chez un scanner.
+COMMANDES_SCANNER_DANGEREUSES = {
+    0x04: "FORMAT UNIT", 0x0A: "WRITE(6)", 0x2E: "WRITE AND VERIFY(10)",
+    0x3B: "WRITE BUFFER", 0x8A: "WRITE(16)", 0xAA: "WRITE(12)",
+}
+# Codes de type de données de READ et SEND, SCSI-2 table 289 (§15.2.4).
+TYPES_DONNEES = {0x00: "image", 0x01: "vendeur", 0x02: "masque de demi-teinte",
+                 0x03: "fonction gamma"}
+# Composition d'image du descripteur de fenêtre, SCSI-2 table 283 (§15.2.7).
+COMPOSITIONS = {0: "noir et blanc 1 bit", 1: "noir et blanc tramé", 2: "gris multiniveau",
+                3: "RVB 1 bit", 4: "RVB tramé", 5: "RVB multiniveau"}
+# Type de bourrage de fin de ligne, SCSI-2 table 284.
+BOURRAGES = {0: "aucun", 1: "zéros jusqu'à l'octet", 2: "uns jusqu'à l'octet",
+             3: "tronqué à l'octet"}
+# Unité des coordonnées de fenêtre : 1/1200 de pouce par défaut (SCSI-2 §15.3.3.1).
+UNITES_PAR_POUCE = 1200
+
+# Zone de dépôt : le CDB emballé occupe les 10 premiers octets (un CDB de 6 o,
+# groupe 0, y est complété par des zéros), les données éventuelles suivent.
+# Vérifié : 12 = 10 + 2 pour SEND 0x95, 89 = 10 + 0x4F pour SET WINDOW.
+LG_ZONE_CDB = 10
+
+
+def nom_type_donnees(code):
+    if code in TYPES_DONNEES:
+        return TYPES_DONNEES[code]
+    return "vendeur" if code >= 0x80 else "réservé"
+
+
+def contient_serie_depot(depot):
+    """SEND type 0x85 : Capture Tool y envoie la date et le numéro de série du
+    scanner (1e-gris-300-recto). Ses données ne s'affichent pas sans --serie."""
+    return len(depot) > 2 and depot[0] == 0x2A and depot[2] == 0x85
+
+
+def decrire_fenetre(params):
+    """Paramètres de SET WINDOW (SCSI-2 §15.2.7) : en-tête de 8 octets (table 293,
+    longueur du descripteur en octets 6-7) puis descripteur de fenêtre (table 282)."""
+    if len(params) < 8:
+        return [f"!! paramètres de SET WINDOW trop courts ({len(params)} o)"]
+    lg_desc = struct.unpack(">H", params[6:8])[0]
+    d = params[8:8 + lg_desc]
+    lignes = []
+    if len(d) < 40 or len(d) != lg_desc:
+        return [f"!! descripteur de fenêtre de {len(d)} o (annoncé {lg_desc})"]
+    ident, auto = d[0], d[1] & 1
+    res_x, res_y = struct.unpack(">HH", d[2:6])
+    x, y, largeur, longueur = struct.unpack(">IIII", d[6:22])
+    pouces = lambda v: f"{v / UNITES_PAR_POUCE:.3f}"
+    lignes.append(f"fenêtre {ident}, auto={auto} : {res_x} × {res_y} ppp, origine ({x}, {y}), "
+                  f"{largeur} × {longueur} unités ({pouces(largeur)} × {pouces(longueur)} po à 1/1200 po)")
+    compo = COMPOSITIONS.get(d[25], "réservé")
+    lignes.append(f"luminosité 0x{d[22]:02X}, seuil 0x{d[23]:02X}, contraste 0x{d[24]:02X}, "
+                  f"composition {d[25]:02X} ({compo}), {d[26]} bits par pixel")
+    demi_teinte, ordre_bits = struct.unpack(">H", d[27:29])[0], struct.unpack(">H", d[30:32])[0]
+    lignes.append(f"demi-teinte 0x{demi_teinte:04X}, RIF {d[29] >> 7}, bourrage {d[29] & 7} "
+                  f"({BOURRAGES.get(d[29] & 7, 'réservé')}), ordre des bits 0x{ordre_bits:04X}, "
+                  f"compression {d[32]:02X}/{d[33]:02X}")
+    vendeur = d[40:]
+    lignes.append(f"octets vendeur ({len(vendeur)}) : {vendeur.hex(' ')}")
+    return lignes
+
+
+def decrire_depot(depot, montrer_serie=False):
+    """Lignes de détail sous le DATA-OUT d'un dépôt (sélecteur 02 03 00) : la
+    commande SCSI-2 emballée, puis ses paramètres quand on sait les lire."""
+    if len(depot) < LG_ZONE_CDB:
+        return [f"!! dépôt de {len(depot)} o (attendu au moins {LG_ZONE_CDB})"]
+    op = depot[0]
+    lg_cdb = 6 if op < 0x20 else 10      # groupe 0 : 6 o ; groupe 1 : 10 o (SCSI-2 §7.2.1)
+    cdb, donnees = depot[:lg_cdb], depot[LG_ZONE_CDB:]
+    if op in COMMANDES_SCANNER_DANGEREUSES:
+        nom = f"{COMMANDES_SCANNER_DANGEREUSES[op]} !! ÉCRITURE"
+    elif op in COMMANDES_SCANNER:
+        nom = "{} (SCSI-2 {})".format(*COMMANDES_SCANNER[op])
+    else:
+        nom = f"opcode 0x{op:02X} (absent de la table 277 des scanners)"
+    texte = f"commande emballée : {nom}, CDB[{lg_cdb}]={cdb.hex(' ')}"
+    if any(depot[lg_cdb:LG_ZONE_CDB]):
+        texte += "  !! zone de CDB non nulle après le CDB"
+    detail = []
+    if op in (0x28, 0x2A):
+        # READ et SEND, SCSI-2 tables 288 et 291 : type octet 2, qualificatif 4-5,
+        # longueur 6-8, gros-boutistes.
+        qualif = struct.unpack(">H", cdb[4:6])[0]
+        lg = int.from_bytes(cdb[6:9], "big")
+        texte += (f", type 0x{cdb[2]:02X} ({nom_type_donnees(cdb[2])}), "
+                  f"qualificatif 0x{qualif:04X}, {lg} o")
+        if op == 0x2A and lg != len(donnees):
+            texte += f"  !! {len(donnees)} o de données déposés"
+        if op == 0x2A and contient_serie_depot(depot) and not montrer_serie:
+            detail.append("données : (numéro de série masqué, --serie)")
+        elif op == 0x2A:
+            detail.append(f"données : {donnees.hex(' ')}")
+    elif op == 0x24:
+        lg = int.from_bytes(cdb[6:9], "big")  # SCSI-2 table 292 : longueur octets 6-8
+        texte += f", {lg} o de paramètres"
+        if lg != len(donnees):
+            texte += f"  !! {len(donnees)} o déposés"
+        detail += decrire_fenetre(donnees)
+    elif op == 0x1B:
+        # SCAN, SCSI-2 table 290 : octet 4 = longueur de la liste de fenêtres ;
+        # octet de contrôle : bits 7-6 réservés au fabricant (SCSI-2 §7.2.7).
+        texte += f", liste de fenêtres de {cdb[4]} o, contrôle 0x{cdb[5]:02X}"
+    elif op < 0x20:
+        texte += f", octet 4 = {cdb[4]}"  # longueur d'allocation ou de transfert du groupe 0
+    if op != 0x2A and op != 0x24 and donnees:
+        detail.append(f"données : {donnees.hex(' ')}")
+    return [texte] + detail
+
+
+# Mots de 32 bits petit-boutistes de la réponse « bloc d'image » (02 02 02, 24 o).
+# Vérifié sur 2a : l'adresse (mot 5) est celle du 0xC3 suivant, et le produit des
+# mots 3 et 4 est le volume que lisent les 0xC3 du bloc. Le sens de ces deux
+# facteurs (octets par ligne, lignes) n'est que déduit.
+ETATS_BLOC = {0: "pas prêt", 1: "prêt", 3: "fin de page"}
+
+
+def decrire_reponse_vendeur(cdb, donnees):
+    """Détail des réponses 0xC5 qu'on sait lire ; liste vide sinon."""
+    if len(cdb) != 16 or cdb[0] != OP_TUNNEL:
+        return []
+    sel = tuple(cdb[10:13])
+    if sel == (0xFF, 0x02, 0) and len(donnees) == 4:
+        return [f"signature « {donnees.decode('ascii', errors='replace')} »"]
+    if sel == (0x02, 0x02, 2) and len(donnees) == 24:
+        etat, _, _, a, b, adresse = struct.unpack("<6I", donnees)
+        return [f"bloc d'image : état {etat} ({ETATS_BLOC.get(etat, '?')}), "
+                f"{a} × {b} = {a * b} o, adresse 0x{adresse:08X}"]
+    if sel in ((0x02, 0x02, 3), (0x02, 0x02, 4)) and len(donnees) == 2:
+        return [f"identifiant 0x{struct.unpack('>H', donnees)[0]:04X}"]
+    if sel == (0x02, 0x02, 1) and len(donnees) == 4:
+        return [f"statut de la commande : 0x{struct.unpack('<I', donnees)[0]:08X}"]
+    return []
+
+
+# ---------------------------------------------------------------------------
 # Production des lignes de trace
 # ---------------------------------------------------------------------------
 
@@ -443,13 +661,29 @@ class Decodeur:
                 self.stats[("CBW", op, lg, sens)] += 1
                 if op in self.masques:
                     return []
-                return [self.ligne(p, "CBW", f"tag=0x{tag:08X} lun={lun} {sens} {lg} o  "
-                                             f"CDB[{lg_cdb}]={cdb.hex(' ')}  {nom_opcode(op)}")]
+                lignes = [self.ligne(p, "CBW", f"tag=0x{tag:08X} lun={lun} {sens} {lg} o  "
+                                               f"CDB[{lg_cdb}]={cdb.hex(' ')}  {nom_opcode(op)}")]
+                if op in (OP_TUNNEL, OP_LECTURE_TAMPON):
+                    lignes += [SUITE + l for l in decrire_cdb_vendeur(cdb)]
+                return lignes
             if d:
                 self.stats["data-out"] += 1
+                cour = self.cbw.get(p.adresse)
+                depot = (cour is not None and cour[1] == OP_TUNNEL and len(cour[2]) == 16
+                         and cour[2][10:13] == b"\x02\x03\x00")
+                if depot:
+                    self.stats[("DEPOT", d[0], len(d))] += 1
                 if self.masque(p):
                     return []
-                return [self.ligne(p, "DATA-OUT", f"{len(d)} o  {hexa(d, self.octets_max)}")]
+                if depot and contient_serie_depot(d) and not self.montrer_serie:
+                    lignes = [self.ligne(p, "DATA-OUT", f"{len(d)} o  {d[:LG_ZONE_CDB].hex(' ')} "
+                                                        f"+ {len(d) - LG_ZONE_CDB} o "
+                                                        f"(numéro de série masqué, --serie)")]
+                else:
+                    lignes = [self.ligne(p, "DATA-OUT", f"{len(d)} o  {hexa(d, self.octets_max)}")]
+                if depot:
+                    lignes += [SUITE + l for l in decrire_depot(d, self.montrer_serie)]
+                return lignes
             return []
         if entrant and p.retour and (d or p.longueur_donnees):
             # Complétion IN : les octets arrivent du scanner.
@@ -471,9 +705,17 @@ class Decodeur:
             if self.masque(p):
                 return []
             tronque = f" (capturés {len(d)})" if p.tronque else ""
+            if (cour and cour[1] == OP_TUNNEL and p.longueur_donnees in (128, 165)
+                    and not self.montrer_serie):
+                # Réponses 0xC5 de 128 et 165 o : INQUIRY emballé (12 … a5) et READ
+                # type 0x69 de 128 o, porteurs du numéro de série (1b, 1e-gris-300-recto).
+                # Même règle que contient_serie() dans src/trace.c.
+                return [self.ligne(p, "DATA-IN", f"{p.longueur_donnees} o{tronque}  "
+                                                 f"(numéro de série masqué, --serie)")]
             lignes = [self.ligne(p, "DATA-IN", f"{p.longueur_donnees} o{tronque}  {hexa(d, self.octets_max)}")]
             if cour:
                 lignes += [SUITE + l for l in decrire_reponse_scsi(cour[2], d)]
+                lignes += [SUITE + l for l in decrire_reponse_vendeur(cour[2], d)]
             return lignes
         return []
 
@@ -589,6 +831,15 @@ def main():
         print("# octets DATA-IN par opcode (longueur réelle, avant troncature) :")
         for op, n in dec.volume_in.most_common():
             print(f"#   {nom_opcode(op):<28} {n:>10} o")
+        depots = sorted(((k, n) for k, n in dec.stats.items() if isinstance(k, tuple) and k[0] == "DEPOT"),
+                        key=lambda kn: -kn[1])
+        if depots:
+            print("# commandes emballées dans 0xC5 (sélecteur 02 03 00), par opcode et taille du dépôt :")
+            for (_, op, lg), n in depots:
+                nom = (COMMANDES_SCANNER_DANGEREUSES.get(op, "") + " !! ÉCRITURE"
+                       if op in COMMANDES_SCANNER_DANGEREUSES
+                       else COMMANDES_SCANNER.get(op, (f"opcode 0x{op:02X}",))[0])
+                print(f"#   {n:>7}  {nom:<28}     {lg:>6} o")
     return 0
 
 

@@ -35,7 +35,7 @@ Une ligne par évènement USB. L'analyseur de captures (`banc/analyse_capture.py
 | `URB` | hôte | URB sans données, ex. `SYNC_RESET_PIPE_AND_CLEAR_STALL` | WDK usb.h |
 | `INT-IN` | appareil → hôte | données d'un transfert d'interruption | USB 2.0 §5.7 |
 
-Les lignes qui commencent par `|` détaillent la ligne précédente (descripteur, sense, INQUIRY, capacité).
+Les lignes qui commencent par `|` détaillent la ligne précédente (descripteur, sense, INQUIRY, capacité). Depuis l'étape 3a, elles décodent aussi le protocole vendeur ([protocole.md](protocole.md)) : sous un CBW 0xC5 ou 0xC3, le sélecteur ou l'adresse ; sous un DATA-OUT de dépôt, la commande SCSI-2 emballée et, pour SET WINDOW, la fenêtre champ par champ ; sous un DATA-IN, la signature, l'état du bloc d'image, le statut ou l'identifiant. `src/trace.c` ne les écrit pas encore : il les écrira quand notre code enverra 0xC5 (étape 3c), sans quoi la comparaison avec 2a échouerait.
 
 Un opcode qui écrit sur le support ou le firmware (WRITE, FORMAT UNIT, WRITE BUFFER…) est marqué `!! ÉCRITURE`.
 
@@ -44,6 +44,6 @@ Un opcode qui écrit sur le support ou le firmware (WRITE, FORMAT UNIT, WRITE BU
 - `src/trace.c` écrit ce format pour notre code, avec le même texte que l'analyseur pour tout échange réussi : SETUP, CTRL-IN, CBW, DATA-IN, CSW, et les décodages de descripteurs, INQUIRY, sense et capacité.
 - Écarts voulus : les lignes `ERREUR` donnent le code Win32 rendu par WinUSB (« contrôle » ou « bulk ») au lieu du code `USBD_STATUS_*` ; notre code n'écrit pas de ligne `URB` ; le numéro de série masqué s'écrit « (numéro de série masqué) », sans la mention `--serie` propre à l'analyseur. Un chemin d'erreur ne peut donc pas concorder ligne à ligne.
 - Écarts connus, sans effet sur le DS-720D : un octet NUL au milieu d'un texte INQUIRY ou STRING le coupe côté C, pas côté analyseur.
-- `trace.c` masque aussi les réponses qui peuvent contenir le numéro de série (CLAUDE.md) : descripteur STRING d'index iSerialNumber, réponses 0xC5 de 128 et 165 o, page VPD 0x80 d'un INQUIRY.
+- `trace.c` masque aussi les réponses qui peuvent contenir le numéro de série (CLAUDE.md) : descripteur STRING d'index iSerialNumber, réponses 0xC5 de 128 et 165 o, page VPD 0x80 d'un INQUIRY. L'analyseur masque depuis l'étape 3a les mêmes réponses 0xC5 et les données de SEND 0x85 emballé (date et numéro de série envoyés par Capture Tool), sauf avec `--serie`.
 - `banc/compare_traces.py REFERENCE NOTRE` compare l'évènement et le détail de chaque ligne, sans les colonnes trame, temps et adresse. `--sans-trames A-B` écarte des trames de la référence, `--sans-notre A-B` des lignes de notre trace, `--sans-tags` ignore les tags des CBW et CSW, choisis librement par chaque hôte (BOT §5.1). Une trace vide de l'un ou l'autre côté fait échouer la comparaison.
 - Banc d'essai sans scanner : `construire.cmd`, puis `out\essai_trace.exe out\essai.txt` rejoue l'énumération de `1b-enumeration.pcap`, à comparer à `analyse_capture.py … --adresse 15 --de 19191 --a 19236` avec `--sans-trames 19207-19213 --sans-notre 11-14` (le numéro de série, remplacé par un faux dans l'essai).
