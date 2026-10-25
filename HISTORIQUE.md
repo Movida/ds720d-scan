@@ -15,3 +15,4 @@ Journal des étapes et des décisions, du plus ancien au plus récent.
 - Conséquence : passer sous WinUSB coupe le logiciel Brother, donc toutes les captures de référence se font avant.
 - Après redémarrage de Medabot : service `USBPcap` RUNNING, `USBPcapCMD.exe` présent. Aucune chaîne de compilation C installée.
 - 1a : docs alignées (CLAUDE.md, passation, création de cet historique).
+- 1b : capture de l'énumération (registre dans [docs/captures.md](docs/captures.md)). Premières observations : le logiciel Brother interroge le scanner en boucle avec une commande vendeur **0xC5**, environ 50 fois par seconde ; Windows envoie INQUIRY puis READ FORMAT CAPACITIES, que le scanner refuse (STALL puis REQUEST SENSE).
