@@ -29,7 +29,7 @@ Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un p
 
 Pourquoi pas le SCSI pass-through sur USBSTOR (voie du 24/10) : `IOCTL_SCSI_PASS_THROUGH_DIRECT` laisse Windows construire les CBW et gérer le transport, on ne voit ni les endpoints ni les transferts bulk. Contraire à l'objectif « le plus bas possible ».
 
-Inconnue principale : le logiciel envoie-t-il des **commandes SCSI propriétaires** (style Avision : SET WINDOW 0x24, READ 0x28…) ou **lit-il et écrit-il des secteurs précis** du faux disque (méthode « MSDC » courante chez NovaTek) ? La capture 1c tranche. Si c'est la seconde, l'écriture de secteurs heurte la règle « jamais écrire sur F: » : décision à prendre avec David avant d'envoyer quoi que ce soit.
+Inconnue tranchée par la capture 1c : le logiciel n'écrit aucun secteur du faux disque, il emploie deux **commandes SCSI vendeur**, 0xC5 (état, réglages) et 0xC3 (lecture de l'image). Détail dans [captures.md](captures.md).
 
 Cadre légal : l'art. L122-6-1 IV du CPI autorise l'étude d'un logiciel pour l'interopérabilité.
 
@@ -41,6 +41,7 @@ Cadre légal : l'art. L122-6-1 IV du CPI autorise l'étude d'un logiciel pour l'
    - 1b. Capture de l'énumération (débrancher, rebrancher).
    - 1c. Capture d'un scan avec Capture Tool : page sans données perso, gris, 300 dpi, recto.
    - 1d. Analyseur de captures fait main (pcap, en-tête USBPcap, CBW/CSW, opcodes SCSI, n° de trame).
+   - 1e. Captures complètes (`-s 262144`) de tous les scénarios dont on aura besoin, puisque WinUSB coupera le logiciel Brother : gris 300 dpi recto, couleur 300 dpi recto, recto-verso.
 2. Passage sous WinUSB et premier programme C : descripteurs lus par transferts de contrôle (USB 2.0 §9.4.3), Get Max LUN (BOT §3.2), INQUIRY encapsulé à la main, trace de chaque transfert.
 3. Rejouer la séquence de scan capturée : une page gris 300 dpi en image brute, puis PGM/PNG.
 4. Couleur et recto-verso.
