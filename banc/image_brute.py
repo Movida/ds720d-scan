@@ -161,6 +161,22 @@ def comparer(brut, bmp, echantillon=4000, dy_max=63):
         print(f"  plan {p} ({nom}) : {cor}")
 
 
+class BmpColonnesPaires(Bmp):
+    """Un BMP à 600 ppp lu une colonne sur deux. À 600 dpi, le scanner rend
+    toujours 2 592 points par ligne (300 ppp en X) et le pilote Brother double la
+    largeur sur le PC : ses colonnes paires sont les points bruts eux-mêmes (0,996),
+    les impaires la moyenne de leurs deux voisins (0,997, contre 0,995 au plus
+    proche voisin) ; étape 4b, docs/protocole.md §5. Lire les colonnes paires
+    ramène donc le BMP à la géométrie du brut, et comparer() s'applique tel quel."""
+
+    def __init__(self, chemin):
+        super().__init__(chemin)
+        self.largeur = self.largeur // 2
+
+    def point(self, x, y, c):
+        return super().point(2 * x, y, c)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sous = ap.add_subparsers(dest="action", required=True)
@@ -173,6 +189,8 @@ def main():
     c.add_argument("reference")
     c.add_argument("--miroir", action="store_true", help="brut lu en miroir (face arrière)")
     c.add_argument("--dy-max", type=int, default=63, help="décalage vertical maximal cherché")
+    c.add_argument("--colonnes-paires", action="store_true",
+                   help="BMP à 600 ppp : ne lire qu'une colonne sur deux")
     args = ap.parse_args()
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -181,7 +199,8 @@ def main():
         ecrire_bmp(brut, args.sortie, args.gris)
         print(f"{args.sortie} : {LARGEUR} × {brut.lignes}, {'gris' if args.gris else 'couleur'}")
     else:
-        comparer(brut, Bmp(args.reference), dy_max=args.dy_max)
+        bmp = BmpColonnesPaires(args.reference) if args.colonnes_paires else Bmp(args.reference)
+        comparer(brut, bmp, dy_max=args.dy_max)
     return 0
 
 
