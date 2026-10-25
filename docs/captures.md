@@ -115,3 +115,13 @@ Constats, à approfondir à l'étape 3 :
 - Ni l'approche, ni le retrait, ni la remise d'une feuille ne changent la moindre réponse aux interrogations de Button Manager. L'évènement `81 03 00 00 00 00 01 00`, vu une fois dans `1e-gris-300-recto` juste avant le scan, reste inexpliqué.
 - Pilote TWAIN Brother : il ignore `CAP_XFERCOUNT` et attend une feuille de plus après chaque feuille ; le réglage `0x925A` est ce délai en secondes (déduit : à 1 s, « Aucun document » immédiat).
 - `contre_verif.py` sur `1e-couleur-300-recto` : 0 écart sur 29 155 CBW et 29 155 CSW.
+
+### 2a-gris-300-recto-sans-bm.pcap (25/10/2026)
+
+- SHA-256 : `986EA4A3B19FE3686036C091BDCAFE79917CE096CC248A0C4E98E19A6B973CCB`
+- 20 575 976 o, 0 trame tronquée, scanner à l'adresse 15. Dernière capture avant la bascule sous WinUSB.
+- Scénario : pilotée, gris 300 recto, recadrage et redressement coupés, **Brother Button Manager arrêté** (`moon.exe`). Image 2548 × 4200.
+- Résultat : **aucune interrogation de fond**. Avant le scan et après, le scanner ne reçoit que des TEST UNIT READY de Windows, environ une par seconde ; le service `Mobile_Series` n'interroge pas le scanner. Les 19 492 commandes de la capture viennent donc toutes du pilote TWAIN : c'est la séquence de scan seule, la référence de l'étape 3.
+- Déroulé : premier 0xC5 à 1,71 s, rafale d'écritures 0xC5 de 10, 12, 28 et 89 o entre 1,72 et 1,87 s, lectures 0xC3 de 3,0 à 6,9 s, plus rien après 8,8 s.
+- 0xC3 : 170 lectures (153 de 65 536 o, 17 de 32 256 o), 10 575 360 o, environ la moitié des autres scans gris 300 (19 906 560 o). À expliquer : feuille plus courte, ou autre cause.
+- Piste, **déduite et non vérifiée**, pour l'étape 3 : le premier octet des données écrites par 0xC5 ressemble à un opcode SCSI emballé dans la commande vendeur (0x08, 0x16, 0x1B, 0x24, 0x28, 0x2A). Le bloc de 89 o commence par 0x24, et contient `01 2c 01 2c`, soit 300 × 300 en gros-boutiste : il pourrait s'agir d'un SET WINDOW, la commande de réglage de fenêtre des scanners SCSI (SCSI-2, chapitre « Scanner devices »). 0xC5 servirait de tunnel vers un jeu de commandes scanner.
