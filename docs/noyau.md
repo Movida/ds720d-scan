@@ -133,8 +133,27 @@ Pour s'attacher à nouveau : WinDbg, Attach to kernel, Net, port 50000, la clé 
 
 Retour arrière : revenir à `avant-debug`, ou `bcdedit /debug off` dans la VM ; sur Medabot, `Remove-NetFirewallRule -DisplayName "ds720d KDNET (VM)"`.
 
+## Test-signing et premier pilote (5f, 25/10)
+
+Accord écrit de David le 25/10 pour le certificat de test, `testsigning` dans la VM et le premier chargement d'un pilote.
+
+1. `noyau/bonjour.c` : pilote KMDF non-PnP, sans matériel. `DriverEntry` affiche un message par `DbgPrintEx`, crée l'objet pilote KMDF (`WdfDriverInitNonPnpDriver`), et `EvtDriverUnload` en affiche un autre au déchargement.
+2. Construction par `construire.cmd noyau` : cible du `Makefile` écrite à la main (`cl /kernel /GS /X` avec les seuls en-têtes du WDK : `km\crt`, `km`, `shared`, KMDF 1.15 ; `link /DRIVER /SUBSYSTEM:NATIVE /ENTRY:FxDriverEntry /NODEFAULTLIB /RELEASE`). `dumpbin` : sous-système Native, entrée `FxDriverEntry`, imports `ntoskrnl.exe` et `WDFLDR.SYS`.
+3. Signature par `noyau/signer.ps1` : certificat auto-signé SHA-256 « CN=ds720d test (VM uniquement) » (empreinte `B23EC996E38B082462453EFB9F495CCC2B93C2AF`), dans le magasin personnel de l'utilisateur de Medabot, clé privée non exportable ; `signtool sign /fd sha256`. La partie publique est exportée dans `out\noyau\ds720d-test.cer` ; la VM n'a pas eu besoin de l'importer.
+4. Instantané `avant-test-signing`, puis `bcdedit /set testsigning on` dans la VM et redémarrage. Options de démarrage de la VM relues : `TESTSIGNING`, `DEBUG`, `DEBUGPORT=NET`. Celles de Medabot n'ont pas bougé (ni `TESTSIGNING` ni `DEBUG`).
+5. Dans la VM, en admin : `sc.exe create ds720d_bonjour type= kernel start= demand binPath= C:\Users\Public\ds720d\bonjour.sys`, puis `sc.exe start`, `sc.exe stop` et `sc.exe delete`. WinDbg affiche « DriverEntry, KMDF 1.15, service …\ds720d_bonjour », « objet pilote KMDF cree », puis « dechargement » ; `sc` passe par RUNNING puis STOPPED, codes de sortie 0.
+
+Pièges :
+- nmake met en majuscules le nom des variables d'environnement qu'il reprend (`$(VCToolsInstallDir)` reste vide) ; on n'en a finalement pas besoin, `km\crt` du WDK fournit les en-têtes C du noyau.
+- `wdfrequest.h` de KMDF lève l'avertissement C4324 (alignement voulu) : seul avertissement coupé (`/wd4324`), le reste reste en `/W4 /WX`.
+- Un premier `bcdedit /set testsigning on` a été tapé par erreur dans un Terminal de Medabot : refusé par Secure Boot (« protégée par la stratégie de démarrage sécurisé »), rien n'a changé. Toujours vérifier `hostname` (`DS720D-NOYAU` dans la VM) avant une commande d'administration.
+- Un instantané à chaud écrit les 8 Go de mémoire de la VM sur D: (plus de dix minutes), mais l'état est figé dès le départ : on peut continuer à travailler pendant l'écriture.
+
+Instantané **`test-signing-pret`** : VM avec KDNET et test-signing, scanner sous WinUSB, prête pour l'étape 6.
+
 ## Retour arrière
 
-- **VM** : revenir à un instantané, ou supprimer la VM ; rien ne fuit vers Medabot.
+- **VM** : revenir à un instantané (`windows-propre`, `avant-debug`, `debug-pret`, `avant-test-signing`, `test-signing-pret`), ou supprimer la VM ; rien ne fuit vers Medabot.
+- **Certificat de test** : `Remove-Item Cert:\CurrentUser\My\B23EC996E38B082462453EFB9F495CCC2B93C2AF` sur Medabot.
 - **Medabot** : désinstaller VMware, WinDbg et le WDK depuis les paramètres ; supprimer la règle de pare-feu de 5e (`Remove-NetFirewallRule -DisplayName "ds720d KDNET (VM)"`) ; en dernier recours, le point de restauration de 5b.
 - **Scanner** : quand VMware le rend à Medabot, il retrouve WinUSB ; sinon débrancher et rebrancher. Retour au pilote Brother : [winusb.md](winusb.md).

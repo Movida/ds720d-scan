@@ -3,8 +3,9 @@
 #
 # Pourquoi nmake et un Makefile écrit à la main plutôt qu'un projet .vcxproj
 # (MSBuild) ou CMake : chaque option du compilateur et de l'éditeur de liens est
-# visible ici, sans couche qui la génère. Le WDK de l'étape 6 passera par MSBuild,
-# imposé pour les pilotes ; d'ici là, on garde le plus simple et le plus lisible.
+# visible ici, sans couche qui la génère. Les pilotes noyau suivent la même règle
+# (étape 5f, cible « noyau » plus bas) : MSBuild n'est que la voie habituelle du
+# WDK, cl et link font le vrai travail et se pilotent très bien à la main.
 #
 # Options de cl.exe :
 #   /utf-8     sources et chaînes en UTF-8 (commentaires en français)
@@ -90,6 +91,60 @@ out\essai_trace.obj: src\essai_trace.c src\trace.h
 
 out\essai_trace.exe: out\essai_trace.obj out\trace.obj
 	link $(LDFLAGS) /OUT:$@ out\essai_trace.obj out\trace.obj
+
+# --- Pilotes noyau (étape 5f) : construits par « construire.cmd noyau » --------------
+#
+# Le WDK 10.0.26100 fournit en-têtes et bibliothèques du noyau et de KMDF.
+# /X fait oublier à cl la variable INCLUDE posée par vcvars64.bat : elle pointe
+# vers les en-têtes de l'espace utilisateur (um, ucrt), qui n'ont rien à faire
+# dans un pilote. On ne garde que ceux du WDK : km\crt (la petite bibliothèque
+# C du noyau : ctype.h, excpt.h, intrin.h…), km, shared et KMDF.
+#
+# KMDF 1.15 : la plus ancienne version du WDK 26100, présente depuis Windows 10
+# 1507 ; nos pilotes n'ont besoin d'aucune fonction plus récente, et une version
+# basse se charge partout (WdfLdr refuse une version plus haute que celle du
+# système).
+#
+# Options propres au noyau :
+#   /kernel    code noyau : pas d'exceptions C++, pas de RTTI, définit _KERNEL_MODE
+#   /GS        cookie de pile, vérifié par BufferOverflowFastFailK.lib (noyau)
+#   /Gy        une fonction par section, que l'éditeur de liens peut écarter
+#   /D_WIN64 /D_AMD64_ /DAMD64   architecture, attendue par les en-têtes km
+#   /wd4324    seul avertissement coupé : « structure remplie en raison du
+#              spécificateur d'alignement », levé par wdfrequest.h de KMDF lui-même
+#              (DECLSPEC_ALIGN voulu) ; /WX le rendrait bloquant sans rien dire de
+#              notre code
+WDK = C:\Program Files (x86)\Windows Kits\10
+WDKVER = 10.0.26100.0
+KMDF_MAJ = 1
+KMDF_MIN = 15
+KCFLAGS = /nologo /utf-8 /std:c17 /W4 /WX /wd4324 /Zi /Od /kernel /GS /Gy /X \
+	/I"$(WDK)\Include\$(WDKVER)\km\crt" /I"$(WDK)\Include\$(WDKVER)\km" \
+	/I"$(WDK)\Include\$(WDKVER)\shared" /I"$(WDK)\Include\wdf\kmdf\$(KMDF_MAJ).$(KMDF_MIN)" \
+	/D_WIN64 /D_AMD64_ /DAMD64 /DKMDF_VERSION_MAJOR=$(KMDF_MAJ) /DKMDF_VERSION_MINOR=$(KMDF_MIN) \
+	/Fdout\noyau\vc.pdb
+# Options de link pour un pilote :
+#   /DRIVER /SUBSYSTEM:NATIVE   image noyau, chargée par le gestionnaire d'E/S
+#   /ENTRY:FxDriverEntry        entrée de KMDF (WdfDriverEntry.lib) : lie le pilote
+#                               à WdfLdr, initialise le cookie /GS, puis appelle DriverEntry
+#   /NODEFAULTLIB               aucune bibliothèque C de l'espace utilisateur
+#   /RELEASE                    somme de contrôle de l'en-tête PE, attendue d'une image noyau
+KLDFLAGS = /nologo /DEBUG /DRIVER /SUBSYSTEM:NATIVE,10.00 /ENTRY:FxDriverEntry /NODEFAULTLIB \
+	/MACHINE:X64 /RELEASE /LIBPATH:"$(WDK)\Lib\$(WDKVER)\km\x64" \
+	/LIBPATH:"$(WDK)\Lib\wdf\kmdf\x64\$(KMDF_MAJ).$(KMDF_MIN)"
+# ntoskrnl.lib et hal.lib : services du noyau ; BufferOverflowFastFailK.lib : /GS ;
+# WdfDriverEntry.lib : FxDriverEntry ; WdfLdr.lib : chargement de la bibliothèque KMDF.
+KLIBS = ntoskrnl.lib hal.lib BufferOverflowFastFailK.lib WdfDriverEntry.lib WdfLdr.lib
+
+noyau: out\noyau\bonjour.sys
+
+# Pilote d'essai sans matériel (étape 5f) : DriverEntry, DbgPrint, déchargement.
+out\noyau\bonjour.obj: noyau\bonjour.c
+	@if not exist out\noyau mkdir out\noyau
+	cl $(KCFLAGS) /c /Fo$@ noyau\bonjour.c
+
+out\noyau\bonjour.sys: out\noyau\bonjour.obj
+	link $(KLDFLAGS) /OUT:$@ out\noyau\bonjour.obj $(KLIBS)
 
 clean:
 	@if exist out rmdir /s /q out
