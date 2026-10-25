@@ -55,6 +55,7 @@ static const uint8_t opcodes_permis[] = {
     0x12, /* INQUIRY, 1b trame 19225 */
     0xC5, /* tunnel vendeur, 1b trame 20841, 2a trame 772 ; les sélecteurs permis
            * sont filtrés à leur tour par tunnel.c */
+    0xC3, /* lecture du tampon d'image, 2a trame 52325 (étape 3e) */
 };
 
 static int opcode_permis(uint8_t op)

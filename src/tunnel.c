@@ -40,6 +40,8 @@ static const struct {
     {{0x02, 0x02, 0x00}, "données de la réponse, 2a trame 863"},
     {{0x02, 0x01, 0x01}, "en-tête, statut, 2a trame 905"},
     {{0x02, 0x02, 0x01}, "statut de la commande, 2a trame 917"},
+    {{0x02, 0x01, 0x02}, "en-tête, bloc d'image, 2a trame 2418"},
+    {{0x02, 0x02, 0x02}, "état du bloc d'image, 2a trame 2431"},
     {{0x02, 0x01, 0x03}, "en-tête, identifiant fabricant, 1b trame 20880"},
     {{0x02, 0x02, 0x03}, "identifiant fabricant, 1b trame 20893"},
     {{0x02, 0x01, 0x04}, "en-tête, identifiant produit, 1b trame 20935"},
@@ -58,6 +60,42 @@ static const struct {
     {{0x08, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00}, 10, "2a trame 808"},
     /* READ (SCSI-2 §15.2.4), type 0xA0 vendeur, qualificatif 0x0A0D, 2 octets. */
     {{0x28, 0x00, 0xa0, 0x00, 0x0a, 0x0d, 0x00, 0x00, 0x02, 0x00}, 10, "2a trame 969"},
+    /* Étape 3e. Les trois SEND vendeur, dont l'effet exact reste inconnu, ont
+     * l'accord écrit de David du 25/10/2026 (CLAUDE.md) : le pilote TWAIN les
+     * envoie avec ces octets avant chaque scan, dans toutes les captures. */
+    /* SEND (SCSI-2 §15.2.6), type 0x95 vendeur, qualificatif 0x0001, 2 octets à 0. */
+    {{0x2a, 0x00, 0x95, 0x00, 0x00, 0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00}, 12, "2a trame 1755"},
+    /* SEND, type 0x96 vendeur, qualificatif 0x0001, 2 octets à 0. */
+    {{0x2a, 0x00, 0x96, 0x00, 0x00, 0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00}, 12, "2a trame 1859"},
+    /* RESERVE UNIT (SCSI-2 §10.2.10), CDB de 6 octets complété de zéros. */
+    {{0x16}, 10, "2a trame 2179"},
+    /* SCAN (SCSI-2 §15.2.5), liste de fenêtres vide, contrôle 0x80 (bit vendeur). */
+    {{0x1b, 0x00, 0x00, 0x00, 0x00, 0x80}, 10, "2a trame 2278"},
+    /* READ (SCSI-2 §15.2.4), type 0x00 image, qualificatif 0x0A0D, 0x1FEAE0 octets. */
+    {{0x28, 0x00, 0x00, 0x00, 0x0a, 0x0d, 0x1f, 0xea, 0xe0, 0x00}, 10, "2a trame 2375"},
+    /* RELEASE UNIT (SCSI-2 §10.2.9). */
+    {{0x17}, 10, "2a trame 120250"},
+};
+
+/* Les deux dépôts de plus de 16 octets, à part pour garder le tableau compact. */
+static const uint8_t send_83[28] = {
+    /* SEND, type 0x83 vendeur, 18 octets : 04 00 00 00 00 00 trois fois (2a trame 1961). */
+    0x2a, 0x00, 0x83, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0x00, 0x04, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
+};
+static const uint8_t set_window[89] = {
+    /* SET WINDOW (SCSI-2 §15.2.7), 79 octets de paramètres (2a trame 2067) : en-tête
+     * de 8 octets, puis la fenêtre 0 en 300 × 300 ppp, 10 368 × 16 800 unités de
+     * 1/1200 po, RVB multiniveau 8 bits, et 31 octets vendeur (protocole.md §3). */
+    0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4f, 0x00,             /* CDB */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x47,                         /* en-tête */
+    0x00, 0x00, 0x01, 0x2c, 0x01, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* id, auto, résolutions, X */
+    0x00, 0x00, 0x00, 0x00, 0x28, 0x80, 0x00, 0x00, 0x41, 0xa0,             /* Y, largeur, longueur */
+    0x80, 0x80, 0x80, 0x05, 0x08, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, /* luminosité … compression */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,                                     /* réservés */
+    0xff, 0x1d, 0xe0, 0xff, 0x00, 0x1e, 0x60, 0x10, 0x68, 0x10, 0x00, 0x00, /* octets vendeur */
+    0x64, 0x00, 0x64, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x0b, 0x01, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
 static int selecteur_permis(const uint8_t s[3])
@@ -70,6 +108,9 @@ static int selecteur_permis(const uint8_t s[3])
 
 static int depot_permis(const uint8_t *depot, uint32_t lg)
 {
+    if ((lg == sizeof send_83 && memcmp(depot, send_83, lg) == 0) ||
+        (lg == sizeof set_window && memcmp(depot, set_window, lg) == 0))
+        return 1;
     for (size_t i = 0; i < sizeof depots_permis / sizeof depots_permis[0]; i++)
         if (depots_permis[i].lg == lg && memcmp(depots_permis[i].octets, depot, lg) == 0)
             return 1;
@@ -228,4 +269,39 @@ int tunnel_commande(const uint8_t *depot, uint32_t lg_depot, uint8_t *reponse, u
     if (lg_reponse && lire_reponse(0, reponse, lg_reponse) != 0)
         return -1;
     return tunnel_statut();
+}
+
+int tunnel_etat_bloc(struct etat_bloc *b)
+{
+    /* Réponse de genre 2, 24 octets (2a, trames 2418 à 2431, puis à chaque tour) :
+     * six mots de 32 bits petit-boutistes, état, deux mots inconnus, deux
+     * facteurs dont le produit est le volume du bloc, adresse (protocole.md §4). */
+    uint8_t d[24];
+    if (lire_reponse(2, d, sizeof d) != 0)
+        return -1;
+    uint32_t mots[6];
+    for (int i = 0; i < 6; i++)
+        mots[i] = (uint32_t)d[4 * i] | (uint32_t)d[4 * i + 1] << 8 | (uint32_t)d[4 * i + 2] << 16 |
+                  (uint32_t)d[4 * i + 3] << 24;
+    b->etat = mots[0];
+    b->volume = (unsigned long long)mots[3] * mots[4];
+    b->adresse = mots[5];
+    return 0;
+}
+
+int tampon_lire(uint32_t adresse, uint8_t *donnees, uint32_t lg)
+{
+    /* CDB 0xC3 (protocole.md §1, 2a trame 52325) : c3 07, adresse et longueur
+     * gros-boutistes, le reste à 0. Commande en lecture seule. */
+    uint8_t cdb[16] = {0xC3, 0x07, (uint8_t)(adresse >> 24), (uint8_t)(adresse >> 16), (uint8_t)(adresse >> 8),
+                       (uint8_t)adresse, (uint8_t)(lg >> 24), (uint8_t)(lg >> 16), (uint8_t)(lg >> 8), (uint8_t)lg};
+    struct bot_resultat r;
+    if (bot_commande_in(0, cdb, sizeof cdb, donnees, lg, &r) != 0)
+        return -1;
+    if (r.statut != 0 || r.recus != lg || r.residu != 0) {
+        fprintf(stderr, "0xC3 à 0x%08X : statut %u, %zu octets reçus sur %u, résidu %u\n", adresse, r.statut,
+                r.recus, lg, r.residu);
+        return -1;
+    }
+    return 0;
 }

@@ -7,12 +7,15 @@
  *   ds720d inquiry [--trace FICHIER]
  *   ds720d etat [--trace FICHIER]
  *   ds720d papier [--trace FICHIER]
+ *   ds720d scan --sortie FICHIER.brut [--trace FICHIER]
  *
  * Chaque commande refait les précédentes, dans l'ordre où Windows énumère le
  * scanner (1b) : descripteurs, GET_MAX_LUN, puis INQUIRY ; « etat » y ajoute la
  * prise de contact du logiciel Brother par le tunnel 0xC5, en lecture seule ;
  * « papier » y ajoute les questions que pose le pilote TWAIN avant un scan
- * (présence du papier), par des commandes de lecture déposées dans le tunnel.
+ * (présence du papier), par des commandes de lecture déposées dans le tunnel ;
+ * « scan » rejoue ensuite le scan d'une page de 2a et écrit l'image brute
+ * (docs/protocole.md §5) dans FICHIER.brut, hors du dépôt.
  * Pourquoi enchaîner plutôt qu'isoler chaque requête : GET_MAX_LUN a besoin du
  * numéro d'interface lu dans les descripteurs, et la trace se compare alors d'un
  * bloc à la référence.
@@ -26,7 +29,11 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <fcntl.h>
+#include <io.h>
+#include <share.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <string.h>
 
 #include "bot.h"
@@ -301,19 +308,158 @@ static int lire_papier(void)
     return 1;
 }
 
+/* Dépôts du scan, tunnel.c les compare octet pour octet à ceux de 2a. */
+static const uint8_t depot_send_95[12] = {0x2a, 0x00, 0x95, 0x00, 0x00, 0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00};
+static const uint8_t depot_send_96[12] = {0x2a, 0x00, 0x96, 0x00, 0x00, 0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00};
+static const uint8_t depot_send_83[28] = {0x2a, 0x00, 0x83, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0x00,
+                                          0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
+                                          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00};
+static const uint8_t depot_fenetre[89] = {
+    0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x47,
+    0x00, 0x00, 0x01, 0x2c, 0x01, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x80,
+    0x00, 0x00, 0x41, 0xa0, 0x80, 0x80, 0x80, 0x05, 0x08, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xff, 0x1d, 0xe0, 0xff, 0x00, 0x1e, 0x60, 0x10, 0x68, 0x10, 0x00, 0x00, 0x64, 0x00,
+    0x64, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x0b, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+static const uint8_t depot_reserve[10] = {0x16};
+static const uint8_t depot_scan[10] = {0x1b, 0x00, 0x00, 0x00, 0x00, 0x80};
+static const uint8_t depot_lire_image[10] = {0x28, 0x00, 0x00, 0x00, 0x0a, 0x0d, 0x1f, 0xea, 0xe0, 0x00};
+static const uint8_t depot_release[10] = {0x17};
+
+/* Délai sans nouveau bloc au-delà duquel on abandonne. Dans 2a, le premier bloc
+ * arrive 1,9 s après le dépôt de READ (908 sondages), les suivants toutes les
+ * 0,18 s ; 30 s laissent une large marge sans attendre indéfiniment. */
+#define ATTENTE_BLOC_MS 30000ULL
+#define TAILLE_LECTURE 65536u /* taille des lectures 0xC3 du pilote Brother (2a, 52325) */
+#define VOLUME_BLOC_MAX (16u << 20) /* garde-fou : 622 080 o dans toutes les captures */
+
+/* Lit les blocs d'image jusqu'à la fin de page (protocole.md §4) et les écrit
+ * dans f. Renvoie le nombre d'octets écrits, ou -1. */
+static long long lire_page(FILE *f)
+{
+    static uint8_t tampon[TAILLE_LECTURE];
+    long long total = 0;
+    int blocs = 0;
+    /* Premier READ image, 2a trame 2373 : dépôt sans lecture de statut. */
+    if (tunnel_deposer(depot_lire_image, sizeof depot_lire_image) != 0)
+        return -1;
+    ULONGLONG depuis = GetTickCount64();
+    for (;;) {
+        struct etat_bloc b;
+        if (tunnel_etat_bloc(&b) != 0)
+            return -1;
+        if (b.etat == 3) /* fin de page, 2a trame 120206 */
+            break;
+        if (b.etat == 0) {
+            /* Pas prêt : le pilote Brother relit aussitôt (2a, trames 2418 à 52293). */
+            if (GetTickCount64() - depuis > ATTENTE_BLOC_MS) {
+                fprintf(stderr, "aucun bloc depuis %llu s, abandon\n", ATTENTE_BLOC_MS / 1000);
+                return -1;
+            }
+            continue;
+        }
+        if (b.etat != 1 || b.volume == 0 || b.volume > VOLUME_BLOC_MAX) {
+            fprintf(stderr, "état de bloc jamais observé : %u, %llu octets\n", b.etat, b.volume);
+            return -1;
+        }
+        /* Bloc prêt (2a trame 52307) : lectures 0xC3 de 64 Kio depuis l'adresse
+         * annoncée, la dernière plus courte (trames 52325 à 52394). */
+        uint32_t adresse = b.adresse;
+        for (unsigned long long reste = b.volume; reste;) {
+            uint32_t n = reste > TAILLE_LECTURE ? TAILLE_LECTURE : (uint32_t)reste;
+            if (tampon_lire(adresse, tampon, n) != 0)
+                return -1;
+            if (fwrite(tampon, 1, n, f) != n) {
+                fprintf(stderr, "écriture de l'image impossible\n");
+                return -1;
+            }
+            adresse += n;
+            reste -= n;
+        }
+        total += (long long)b.volume;
+        blocs++;
+        /* Statut du READ (trames 52424 à 52436), puis READ suivant (52478). */
+        if (tunnel_statut() != 0 || tunnel_deposer(depot_lire_image, sizeof depot_lire_image) != 0)
+            return -1;
+        depuis = GetTickCount64();
+    }
+    trace_note("fin de page : %d blocs, %lld octets", blocs, total);
+    return total;
+}
+
+/* Scan d'une page en gris 300 dpi, rejoué de la capture 2a (pilote TWAIN,
+ * Button Manager arrêté), trames 1753 à 120868 : les réglages (trois SEND
+ * vendeur, SET WINDOW), RESERVE UNIT, SCAN, la boucle de lecture, puis
+ * RELEASE UNIT. Chaque dépôt est identique à celui de 2a à l'octet près. La
+ * fenêtre demande du RVB : le gris se tire du plan vert, sur le PC (étape 3f).
+ *
+ * Accord écrit de David du 25/10/2026 (« go », en réponse à la demande du fil
+ * de l'étape 3) pour les trois SEND vendeur, dont l'effet exact reste inconnu
+ * (CLAUDE.md) : le pilote TWAIN les envoie avec ces octets avant chaque scan,
+ * dans toutes les captures.
+ *
+ * Une fois l'unité réservée, toute erreur tente RELEASE UNIT avant de rendre
+ * la main, pour ne pas laisser le scanner réservé (arrêt propre). */
+static int scanner_page(const char *sortie)
+{
+    /* Le fichier ne doit pas exister : on n'écrase jamais une image. */
+    int fd;
+    if (_sopen_s(&fd, sortie, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _SH_DENYWR, _S_IREAD | _S_IWRITE) != 0) {
+        fprintf(stderr, "impossible de créer %s (existe-t-il déjà ?)\n", sortie);
+        return -1;
+    }
+    FILE *f = _fdopen(fd, "wb");
+    if (!f) {
+        _close(fd);
+        return -1;
+    }
+    int r = lire_papier();
+    if (r == 0)
+        fprintf(stderr, "pas de feuille dans le chargeur\n");
+    if (r != 1) {
+        fclose(f);
+        remove(sortie);
+        return -1;
+    }
+    /* Réglages, trames 1753 à 2171 : chacun déposé puis son statut lu. */
+    if (tunnel_commande(depot_send_95, sizeof depot_send_95, NULL, 0) != 0 ||
+        tunnel_commande(depot_send_96, sizeof depot_send_96, NULL, 0) != 0 ||
+        tunnel_commande(depot_send_83, sizeof depot_send_83, NULL, 0) != 0 ||
+        tunnel_commande(depot_fenetre, sizeof depot_fenetre, NULL, 0) != 0 ||
+        tunnel_commande(depot_reserve, sizeof depot_reserve, NULL, 0) != 0) {
+        fclose(f);
+        return -1;
+    }
+    /* Unité réservée (trame 2177) : SCAN (2276), lecture, RELEASE (120248). */
+    long long total = -1;
+    if (tunnel_commande(depot_scan, sizeof depot_scan, NULL, 0) == 0)
+        total = lire_page(f);
+    int liberee = tunnel_commande(depot_release, sizeof depot_release, NULL, 0) == 0;
+    if (fclose(f) != 0)
+        total = -1;
+    if (!liberee)
+        fprintf(stderr, "RELEASE UNIT a échoué : débrancher et rebrancher le scanner\n");
+    if (total < 0 || !liberee)
+        return -1;
+    printf("%s : %lld octets, %lld lignes de 3 × 2592 points\n", sortie, total, total / 7776);
+    return 0;
+}
+
 static void usage(void)
 {
-    fprintf(stderr, "usage : ds720d descripteurs|lun|inquiry|etat|papier [--trace FICHIER]\n");
+    fprintf(stderr, "usage : ds720d descripteurs|lun|inquiry|etat|papier [--trace FICHIER]\n"
+                    "        ds720d scan --sortie FICHIER.brut [--trace FICHIER]\n");
 }
 
 int main(int argc, char **argv)
 {
-    const char *commande = NULL, *chemin_trace = NULL;
+    const char *commande = NULL, *chemin_trace = NULL, *sortie = NULL;
     SetConsoleOutputCP(CP_UTF8); /* la trace est en UTF-8 */
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--trace") == 0 && i + 1 < argc)
             chemin_trace = argv[++i];
+        else if (strcmp(argv[i], "--sortie") == 0 && i + 1 < argc)
+            sortie = argv[++i];
         else if (!commande)
             commande = argv[i];
         else {
@@ -322,7 +468,7 @@ int main(int argc, char **argv)
         }
     }
     /* Niveau atteint par la commande : 1 descripteurs, 2 GET_MAX_LUN, 3 INQUIRY,
-     * 4 prise de contact par 0xC5, 5 présence du papier. */
+     * 4 prise de contact par 0xC5, 5 présence du papier, 6 scan d'une page. */
     int niveau = 0;
     if (commande && strcmp(commande, "descripteurs") == 0)
         niveau = 1;
@@ -334,6 +480,8 @@ int main(int argc, char **argv)
         niveau = 4;
     else if (commande && strcmp(commande, "papier") == 0)
         niveau = 5;
+    else if (commande && strcmp(commande, "scan") == 0 && sortie)
+        niveau = 6;
     if (!niveau) {
         usage();
         return 2;
@@ -356,7 +504,9 @@ int main(int argc, char **argv)
     }
     if (r == 0 && niveau >= 4)
         r = lire_etat();
-    if (r == 0 && niveau >= 5) {
+    if (r == 0 && niveau == 6)
+        r = scanner_page(sortie);
+    if (r == 0 && niveau == 5) {
         int papier = lire_papier();
         if (papier >= 0)
             printf("%s\n", papier ? "feuille engagée" : "pas de feuille");

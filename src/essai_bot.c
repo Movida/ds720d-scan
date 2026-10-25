@@ -188,14 +188,14 @@ static int cas_sortant(const char *nom, int stall, int attendu, const char *repr
  * sinon, nombre de CBW de la chorégraphie de 2a (trames 781 à 934) : 4
  * sondages, le dépôt, 2 sondages, puis deux lectures de réponse de 9 CBW
  * chacune (4 sondages, en-tête, sondage, réponse, 2 sondages). */
-static int cas_depot(const char *nom, const uint8_t *depot, uint32_t lg, int occupe, int attendu,
-                     int cbw_attendus)
+static int cas_depot(const char *nom, const uint8_t *depot, uint32_t lg, uint32_t lg_reponse, int occupe,
+                     int attendu, int cbw_attendus)
 {
     uint8_t reponse[2];
     memset(&faux, 0, sizeof faux);
     faux.occupe = occupe;
     trace_note("cas : %s", nom);
-    int obtenu = tunnel_commande(depot, lg, reponse, sizeof reponse);
+    int obtenu = tunnel_commande(depot, lg, reponse, lg_reponse);
     int bon = obtenu == attendu && faux.ecritures == cbw_attendus;
     printf("%s  %s (retour %d, %d CBW envoyé(s))\n", bon ? "OK   " : "ÉCHEC", nom, obtenu, faux.ecritures);
     return bon;
@@ -211,7 +211,7 @@ int main(void)
     total++, bons += cas("INQUIRY correct", 0x12, normal, 0, 1, "");
     total++, bons += cas("WRITE(10) 0x2A refusé avant envoi", 0x2A, normal, -1, 0, "");
     total++, bons += cas("FORMAT UNIT 0x04 refusé avant envoi", 0x04, normal, -1, 0, "");
-    total++, bons += cas("vendeur 0xC3 refusé (pas encore dans la liste)", 0xC3, normal, -1, 0, "");
+    total++, bons += cas("WRITE BUFFER 0x3B (firmware) refusé avant envoi", 0x3B, normal, -1, 0, "");
     total++, bons += cas("vendeur 0xC5 admis (étape 3c)", 0xC5, normal, 0, 1, "");
     total++, bons += cas("CSW au mauvais tag rejeté, Reset Recovery", 0x12, (struct reglages){1, 0, 0, 0, 0}, -1,
                          1, "RIO");
@@ -234,14 +234,19 @@ int main(void)
     static const uint8_t papier[10] = {0x08, 0, 0, 0, 0x02};
     static const uint8_t papier_faux[10] = {0x08, 0, 0, 0, 0x03}; /* un octet de différence */
     static const uint8_t send95[12] = {0x2a, 0, 0x95, 0, 0, 0x01, 0, 0, 0x02};
-    total++, bons += cas_depot("dépôt 0x08 de 2a accepté, 25 CBW", papier, sizeof papier, 0, 0, 25);
+    /* Les octets de Capture Tool (00 78, 1e-gris-300-recto) au lieu de ceux de TWAIN. */
+    static const uint8_t send95_ct[12] = {0x2a, 0, 0x95, 0, 0, 0x01, 0, 0, 0x02, 0, 0, 0x78};
+    total++, bons += cas_depot("dépôt 0x08 de 2a accepté, 25 CBW", papier, sizeof papier, 2, 0, 0, 25);
     /* Le premier ff 04 « occupé » tombe dans les sondages d'avant le dépôt, que
      * tunnel.c ne fait pas attendre (aucune capture n'y montre un 0) ; le second,
      * après le dépôt, est relu une fois : 26 CBW au lieu de 25. */
-    total++, bons += cas_depot("scanner occupé après le dépôt : ff 04 relu, 26 CBW", papier, sizeof papier, 2, 0, 26);
-    total++, bons += cas_depot("dépôt 0x08 altéré d'un octet refusé", papier_faux, sizeof papier_faux, 0, -1, 0);
-    total++, bons += cas_depot("dépôt SEND 0x95 refusé (étape 3e, accord de David)", send95, sizeof send95, 0, -1,
-                               0);
+    total++, bons += cas_depot("scanner occupé après le dépôt : ff 04 relu, 26 CBW", papier, sizeof papier, 2, 2, 0,
+                               26);
+    total++, bons += cas_depot("dépôt 0x08 altéré d'un octet refusé", papier_faux, sizeof papier_faux, 2, 0, -1, 0);
+    /* SEND ne rend pas de données : dépôt et statut seulement, 7 + 9 = 16 CBW. */
+    total++, bons += cas_depot("dépôt SEND 0x95 de 2a accepté (étape 3e), 16 CBW", send95, sizeof send95, 0, 0, 0,
+                               16);
+    total++, bons += cas_depot("dépôt SEND 0x95 de Capture Tool refusé", send95_ct, sizeof send95_ct, 0, 0, -1, 0);
     trace_fermer();
     printf("%d/%d cas conformes\n", bons, total);
     return bons == total ? 0 : 1;

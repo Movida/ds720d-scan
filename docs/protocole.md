@@ -110,7 +110,9 @@ Différences observées, en numérotant les octets vendeur de 0 à 30 (octet 40 
 2. Sondage `02 01 2` puis `02 02 2`, 24 o, six mots de 32 bits petit-boutistes. Le mot 0 est l'état : **0** pas prêt, **1** prêt, **3** fin de page. Dans 2a, 908 sondages avant le premier bloc, pendant que la feuille avance.
 3. État 1 (réponse trame 52310) : mots 3 et 4 = 2 592 et 240, mot 5 = l'adresse du bloc, ici `0x0059AA00`.
 4. Lectures 0xC3 : 9 de 65 536 o puis une de 32 256 o, de l'adresse annoncée en montant (trames 52325 à 52394). Total 622 080 o = 2 592 × 240.
-5. Retour en 1. À l'état 3 (réponse trame 120209), RELEASE UNIT.
+5. Retour en 1, après lecture du statut de READ (trames 52424 à 52436) et un nouveau dépôt de READ (trame 52478). À l'état 3 (réponse trame 120209), RELEASE UNIT, sans statut du dernier READ ; après RELEASE, `ff 04` répond « occupé » (octet 8 à 0) pendant environ 1,1 s, l'éjection de la feuille, et le pilote le relit toutes les 107 ms (trames 120255 à 120805).
+
+Rejoué par `ds720d scan` à l'étape 3e (`src/ds720d.c`, `lire_page`) : même suite de commandes que 2a, mêmes délais (capture `3e-scan-2`).
 
 **Vérifié sur toutes les captures** (`banc/verif_blocs.py` sur les traces de l'analyseur) : chaque bloc annoncé est suivi de lectures 0xC3 contiguës depuis l'adresse annoncée, pour un total égal au produit des mots 3 et 4, soit 0 écart sur 17 blocs (2a) et 552 blocs (1c et 1e). Les facteurs valent 2 592 et 240 partout, 600 dpi compris.
 
