@@ -219,3 +219,20 @@ Débit des lectures 0xC3, mesuré sur les captures : 26,3 Mo/s par notre pilote 
 - `banc/extrait_image.py` suit une lecture 0xC3 arrivée en plusieurs morceaux (toujours, sans option).
 
 Piège : les traces de `ds720dk.exe` ne mesurent pas la durée d'une commande (CBW, données et CSW y sont écrits au retour de l'IOCTL) ; le débit se mesure sur la capture.
+
+### 6h : robustesse (25/10)
+
+Aucun code nouveau dans le pilote. Sous Driver Verifier et le vérificateur KMDF, WinDbg attaché (copie des traces coupée) :
+1. **Outil tué pendant une attente** : scan de deux feuilles, `Stop-Process` pendant l'attente de la seconde (le pilote reçoit une requête par seconde) ; aucune faute, le scanner reste sous `ds720d`, `ds720dk etat` réussit aussitôt après.
+2. **Désactivation pendant que l'outil tient le scanner** : Windows **refuse** de désactiver un appareil ouvert (`pnputil` : « redémarrage nécessaire »), l'outil continue sans erreur ; la désactivation reste en attente (`DN_NEED_RESTART`) et `pnputil` refuse ensuite toute opération sur l'appareil jusqu'au redémarrage de la VM, qui l'applique : `installer.ps1 activer` (nouvelle action) remet le scanner en marche.
+3. **Outil tué en plein scan** (involontaire : un Ctrl+C dans PowerShell, sortie redirigée, fait tuer l'outil par PowerShell) : trace coupée en pleine lecture, pas de RELEASE UNIT ; le scanner reste en plein scan, feuille arrêtée et voyant clignotant ; une fois la feuille retirée, `etat` et `papier` réussissent, aucune faute.
+4. **Faux contact du câble en plein scan** (réel, capture `6h-robustesse-3`) : `USBD_STATUS_XACT_ERROR` sur une lecture d'image, puis l'appareil disparaît (`DEVICE_GONE`) ; le pilote tente sa Reset Recovery (reset de classe et déblocages, tous en `DEVICE_GONE`), rend l'erreur à l'outil, traite le retrait (`EvtDeviceSurpriseRemoval`, abandon des pipes, déchargement), puis se recharge quand le scanner revient ; Driver Verifier : aucune faute, aucune fuite. Un premier départ du bus, entre deux scans, s'était déroulé de même.
+5. **Ctrl+C en plein scan** (`banc/vm/essai_ctrlc.ps1`, capture `6h-ctrlc`) : Ctrl+C produit par `GenerateConsoleCtrlEvent` une seconde après le premier bloc ; l'outil affiche « scan interrompu (Ctrl+C) », envoie RELEASE UNIT, puis attend la fin de l'éjection (environ 8 s de sondages `ff 04` « occupé ») ; trace et capture concordent (10 142 lignes).
+
+Pièges :
+- La touche Ctrl de la console de VMware n'arrive pas à l'invité (des « c » simples) ; et, dans PowerShell, Ctrl+C sur un programme dont la sortie est redirigée le fait tuer par PowerShell : d'où `essai_ctrlc.ps1`. Son Ctrl+C touche toute la console, y compris le PowerShell de `invite.ps1`, qui s'arrête sans rendre sa sortie : le script écrit aussi un compte rendu dans `NOM-rapport.txt` (ajouté après l'essai, pas encore rejoué).
+- L'outil garde son fichier de trace verrouillé pendant le scan : un script qui veut suivre l'avancement lit la sortie standard, où la trace est recopiée.
+- L'outil refuse d'écraser une sortie existante, avant tout échange avec le scanner ; mais il ouvre la trace avant ce refus : un nom déjà pris écrase la trace du passage précédent (vu avec `6h-ctrlc2`).
+- Une capture USBPcap dure 900 s au plus : la relancer sous un autre nom après une longue attente.
+
+Ouvert, pour l'outil final (étape 7) : rendre la désactivation possible pendant que l'outil tourne (fermer la poignée sur notification de retrait, `CM_Register_Notification`) ; ne pas ouvrir la trace avant d'avoir vérifié la sortie.

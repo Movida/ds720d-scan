@@ -12,6 +12,8 @@
 #   verificateur-arret   retire Driver Verifier (redémarrage ensuite)
 #   installer            accord A3 : paquet ajouté au magasin, scanner lié à ds720d
 #   cycle [N]            désactive puis réactive le scanner N fois (1 par défaut)
+#   activer              réactive le scanner seul (après une désactivation restée
+#                        en attente, appliquée au redémarrage : étape 6h)
 #   echo 0|1             copie des traces vers WinDbg coupée (0, par défaut) ou
 #                        active (1) ; le pilote est rechargé pour la prendre en compte
 #   retour               paquet retiré, scanner rendu à WinUSB (comme à l'étape 2)
@@ -32,7 +34,7 @@
 
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet('etat', 'certificat', 'verificateur', 'verificateur-arret', 'installer', 'cycle', 'echo', 'retour')]
+    [ValidateSet('etat', 'certificat', 'verificateur', 'verificateur-arret', 'installer', 'cycle', 'activer', 'echo', 'retour')]
     [string]$Action,
     # Nombre de cycles pour « cycle », 0 ou 1 pour « echo ».
     [Parameter(Position = 1)][string]$Valeur
@@ -202,6 +204,15 @@ switch ($Action) {
             Pnputil @('/disable-device', '/deviceid', $ID_SCANNER)
             Pnputil @('/enable-device', '/deviceid', $ID_SCANNER)
         }
+        Montrer-Scanner
+    }
+    'activer' {
+        # Désactiver un scanner ouvert par l'outil est refusé par Windows, qui
+        # garde la désactivation en attente et l'applique au redémarrage
+        # (étape 6h) : le scanner revient alors désactivé. Cette action le
+        # réactive, sans passer par une désactivation.
+        Exiger-Admin
+        Pnputil @('/enable-device', '/deviceid', $ID_SCANNER)
         Montrer-Scanner
     }
     'echo' {
