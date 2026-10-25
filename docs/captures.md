@@ -16,6 +16,26 @@ USBPcapCMD est lancé par David dans un **Terminal (Admin)** (l'ouverture de `\\
 - Format de sortie : pcap classique, type de lien USBPcap.
 - **À ajouter désormais : `-s 262144`.** La longueur de capture par défaut (65 535 o) coupe les blocs d'image de 65 536 o : avec les 27 o d'en-tête USBPcap, il manque 28 o de données par bloc. `py banc/analyse_capture.py <capture> --adresse N --resume` doit afficher « trames tronquées : 0 ».
 
+### Capture pilotée par Claude (depuis 1e)
+
+`banc/capture_admin.ps1` tourne avec les droits admin via une tâche planifiée que David a créée une fois. Claude la déclenche sans élévation : il écrit `demande.txt` (`nom=…`, `hub=1`, `duree=300`) dans le dossier des captures, lance `schtasks /run /tn ds720d-capture`, puis crée le fichier `stop` pour arrêter. Le script refuse tout nom ou valeur hors des formats prévus, n'écrase jamais une capture et note tout dans `capture.log`.
+
+Installation, une fois, par David dans un terminal administrateur. Le script est copié dans un dossier que seul un administrateur peut modifier : changer la version du dépôt n'a d'effet qu'après une nouvelle copie par David.
+
+```
+New-Item -ItemType Directory -Force C:\ProgramData\ds720d | Out-Null
+icacls C:\ProgramData\ds720d /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX"
+Copy-Item C:\Users\morva\claude-chrome\ds720d-scan\banc\capture_admin.ps1 C:\ProgramData\ds720d\
+$action = New-ScheduledTaskAction -Execute powershell.exe -Argument '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\ProgramData\ds720d\capture_admin.ps1'
+$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
+$reglages = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 20) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName ds720d-capture -Action $action -Principal $principal -Settings $reglages
+```
+
+(SID : `S-1-5-32-544` Administrateurs, `S-1-5-18` Système, `S-1-5-32-545` Utilisateurs, en lecture et exécution seulement.)
+
+Désinstallation : `Unregister-ScheduledTask ds720d-capture -Confirm:$false; Remove-Item -Recurse C:\ProgramData\ds720d`.
+
 Analyse : `banc/analyse_capture.py` (trace au [format commun](format-trace.md)), vérifié par `banc/contre_verif.py` contre tshark.
 
 Piège : Ctrl+C rend l'invite, mais USBPcapCMD continue dans un second processus, élevé. L'arrêter depuis un terminal **administrateur** (ou le Gestionnaire des tâches) avec `Get-Process USBPcapCMD | Stop-Process` ; hors admin, Windows répond « Accès refusé ». La dernière trame peut alors être tronquée.
