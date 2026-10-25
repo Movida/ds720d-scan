@@ -4,9 +4,10 @@
  * Usage :
  *   ds720d descripteurs [--trace FICHIER]
  *   ds720d lun [--trace FICHIER]
+ *   ds720d inquiry [--trace FICHIER]
  *
  * Chaque commande refait les précédentes, dans l'ordre où Windows énumère le
- * scanner (1b) : descripteurs, puis GET_MAX_LUN. Pourquoi enchaîner plutôt
+ * scanner (1b) : descripteurs, GET_MAX_LUN, puis INQUIRY. Pourquoi enchaîner plutôt
  * qu'isoler chaque requête : GET_MAX_LUN a besoin du numéro d'interface lu dans
  * les descripteurs, et la trace se compare alors d'un bloc à la référence.
  *
@@ -20,6 +21,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bot.h"
 #include "peripherique.h"
 #include "trace.h"
 
@@ -163,9 +165,45 @@ static int lire_max_lun(void)
     return 0;
 }
 
+/* INQUIRY standard, première commande SCSI qu'envoie Windows (1b, trame 19225).
+ * CDB de 6 octets (SPC-4, « INQUIRY command ») :
+ *   octet 0     0x12, code d'opération INQUIRY
+ *   octet 1     0x00, EVPD à 0 : données standard, pas une page de données vitales
+ *   octet 2     0x00, code de page (ignoré quand EVPD vaut 0)
+ *   octets 3-4  0x0024, longueur d'allocation en gros-boutiste : 36 octets, la
+ *               taille des données standard minimales
+ *   octet 5     0x00, octet de contrôle
+ * Exactement le CDB de Windows en 1b. Commande en lecture seule : elle demande à
+ * l'appareil de se décrire, sans rien modifier. */
+static int envoyer_inquiry(void)
+{
+    static const uint8_t cdb[6] = {0x12, 0x00, 0x00, 0x00, 0x24, 0x00};
+    uint8_t d[36];
+    struct bot_resultat r;
+
+    if (bot_commande_in(0, cdb, sizeof cdb, d, sizeof d, &r) != 0)
+        return -1;
+    if (r.statut != 0) {
+        fprintf(stderr, "INQUIRY : statut CSW %u (échec)\n", r.statut);
+        return -1;
+    }
+    if (r.recus != 36 || r.residu != 0) {
+        fprintf(stderr, "INQUIRY : %zu octets reçus, résidu %u (36 et 0 attendus)\n", r.recus, r.residu);
+        return -1;
+    }
+    /* Données standard (SPC-4, « Standard INQUIRY data ») : vendeur aux octets
+     * 8 à 15, produit de 16 à 31, révision de 32 à 35, en ASCII complété d'espaces. */
+    if (memcmp(d + 8, "Brother ", 8) != 0 || memcmp(d + 16, "DS-720D ", 8) != 0) {
+        fprintf(stderr, "INQUIRY : ce n'est pas un Brother DS-720D\n");
+        return -1;
+    }
+    trace_note("INQUIRY : %.8s / %.16s / révision %.4s", d + 8, d + 16, d + 32);
+    return 0;
+}
+
 static void usage(void)
 {
-    fprintf(stderr, "usage : ds720d descripteurs|lun [--trace FICHIER]\n");
+    fprintf(stderr, "usage : ds720d descripteurs|lun|inquiry [--trace FICHIER]\n");
 }
 
 int main(int argc, char **argv)
@@ -183,12 +221,14 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    /* Niveau atteint par la commande : 1 descripteurs, 2 GET_MAX_LUN. */
+    /* Niveau atteint par la commande : 1 descripteurs, 2 GET_MAX_LUN, 3 INQUIRY. */
     int niveau = 0;
     if (commande && strcmp(commande, "descripteurs") == 0)
         niveau = 1;
     else if (commande && strcmp(commande, "lun") == 0)
         niveau = 2;
+    else if (commande && strcmp(commande, "inquiry") == 0)
+        niveau = 3;
     if (!niveau) {
         usage();
         return 2;
@@ -204,6 +244,10 @@ int main(int argc, char **argv)
         r = lire_max_lun();
         if (r == 0)
             trace_note("plus haut LUN : %u", scanner.max_lun);
+    }
+    if (r == 0 && niveau >= 3) {
+        bot_init(scanner.ep_in, scanner.ep_out);
+        r = envoyer_inquiry();
     }
     periph_fermer();
     trace_fermer();

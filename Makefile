@@ -33,14 +33,18 @@ out\peripherique.obj: src\peripherique.c src\peripherique.h src\trace.h
 	@if not exist out mkdir out
 	cl $(CFLAGS) /c /Fo$@ src\peripherique.c
 
-out\ds720d.obj: src\ds720d.c src\peripherique.h src\trace.h
+out\bot.obj: src\bot.c src\bot.h src\peripherique.h src\trace.h
+	@if not exist out mkdir out
+	cl $(CFLAGS) /c /Fo$@ src\bot.c
+
+out\ds720d.obj: src\ds720d.c src\bot.h src\peripherique.h src\trace.h
 	@if not exist out mkdir out
 	cl $(CFLAGS) /c /Fo$@ src\ds720d.c
 
 # winusb.lib : fonctions WinUsb_* ; setupapi.lib : recherche du scanner (SetupDi*).
 # Toutes deux viennent du Windows SDK.
-out\ds720d.exe: out\ds720d.obj out\peripherique.obj out\trace.obj
-	link $(LDFLAGS) /OUT:$@ out\ds720d.obj out\peripherique.obj out\trace.obj winusb.lib setupapi.lib
+out\ds720d.exe: out\ds720d.obj out\bot.obj out\peripherique.obj out\trace.obj
+	link $(LDFLAGS) /OUT:$@ out\ds720d.obj out\bot.obj out\peripherique.obj out\trace.obj winusb.lib setupapi.lib
 
 out\essai_trace.obj: src\essai_trace.c src\trace.h
 	@if not exist out mkdir out

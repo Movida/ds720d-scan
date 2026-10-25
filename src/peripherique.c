@@ -35,6 +35,11 @@ static WINUSB_INTERFACE_HANDLE winusb;          /* poignée WinUSB sur son inter
  * marge très large sans bloquer longtemps si le scanner ne répond pas. */
 #define DELAI_CONTROLE_MS 2000
 
+/* Délai maximal d'un transfert bulk. Une commande Bulk-Only de 1b se boucle en
+ * moins d'une milliseconde (INQUIRY, trames 19225 à 19230) ; 5 s laisse une
+ * grande marge tout en évitant d'attendre indéfiniment un scanner muet. */
+#define DELAI_BULK_MS 5000
+
 /* Lit une propriété texte (REG_SZ ou REG_MULTI_SZ) d'un appareil. */
 static int propriete(HDEVINFO liste, SP_DEVINFO_DATA *app, DWORD prop, wchar_t *dst, DWORD taille)
 {
@@ -164,5 +169,46 @@ long periph_controle(const uint8_t setup[8], uint8_t *donnees)
     }
     if (entrant && transferes)
         trace_ctrl_in(setup, donnees, transferes); /* données entrantes : tracées à l'arrivée */
+    return (long)transferes;
+}
+
+/* Le délai est une politique de pipe WinUSB, à poser une fois par endpoint. */
+static void delai_bulk(uint8_t endpoint)
+{
+    static uint8_t faits[32];
+    unsigned i = (endpoint & 0x0F) | ((endpoint & 0x80) ? 16 : 0);
+    if (!faits[i]) {
+        ULONG delai = DELAI_BULK_MS;
+        WinUsb_SetPipePolicy(winusb, endpoint, PIPE_TRANSFER_TIMEOUT, sizeof delai, &delai);
+        faits[i] = 1;
+    }
+}
+
+long periph_bulk_ecrire(uint8_t endpoint, const uint8_t *donnees, size_t lg, unsigned long *erreur)
+{
+    ULONG transferes = 0;
+    delai_bulk(endpoint);
+    /* WinUsb_WritePipe prend un tampon non constant, sans le modifier (doc WDK). */
+    if (!WinUsb_WritePipe(winusb, endpoint, (PUCHAR)donnees, (ULONG)lg, &transferes, NULL)) {
+        unsigned long e = GetLastError();
+        trace_erreur(endpoint, "bulk", e);
+        if (erreur)
+            *erreur = e;
+        return -1;
+    }
+    return (long)transferes;
+}
+
+long periph_bulk_lire(uint8_t endpoint, uint8_t *donnees, size_t lg, unsigned long *erreur)
+{
+    ULONG transferes = 0;
+    delai_bulk(endpoint);
+    if (!WinUsb_ReadPipe(winusb, endpoint, donnees, (ULONG)lg, &transferes, NULL)) {
+        unsigned long e = GetLastError();
+        trace_erreur(endpoint, "bulk", e);
+        if (erreur)
+            *erreur = e;
+        return -1;
+    }
     return (long)transferes;
 }

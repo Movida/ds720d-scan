@@ -27,4 +27,11 @@ void periph_fermer(void);
  * Renvoie le nombre d'octets transférés, ou -1 en cas d'échec. */
 long periph_controle(const uint8_t setup[8], uint8_t *donnees);
 
+/* Transferts bulk (USB 2.0 §5.8) sur l'endpoint donné. Ces deux fonctions ne
+ * tracent que les échecs : le sens des octets (CBW, données, CSW) n'est connu
+ * que de l'appelant, qui les trace lui-même. Renvoient le nombre d'octets
+ * transférés, ou -1 en cas d'échec (code Win32 dans *erreur si non NULL). */
+long periph_bulk_ecrire(uint8_t endpoint, const uint8_t *donnees, size_t lg, unsigned long *erreur);
+long periph_bulk_lire(uint8_t endpoint, uint8_t *donnees, size_t lg, unsigned long *erreur);
+
 #endif
