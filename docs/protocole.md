@@ -113,11 +113,24 @@ Différences observées, en numérotant les octets vendeur de 0 à 30 (octet 40 
 
 **Vérifié sur toutes les captures** (`banc/verif_blocs.py` sur les traces de l'analyseur) : chaque bloc annoncé est suivi de lectures 0xC3 contiguës depuis l'adresse annoncée, pour un total égal au produit des mots 3 et 4, soit 0 écart sur 17 blocs (2a) et 552 blocs (1c et 1e). Les facteurs valent 2 592 et 240 partout, 600 dpi compris.
 
-Le sens de 2 592 et 240 (octets par ligne, lignes, rangement de R, V, B) n'est pas établi : c'est l'objet de l'étape 3b, sur les octets d'image de 2a.
+Le sens de 2 592 et 240 est établi à l'étape 3b (section suivante) : 240 plans de 2 592 points, soit 80 lignes RVB par bloc.
 
-## 5. Questions ouvertes
+## 5. Format des données d'image (étape 3b)
+
+Établi en recollant les blocs (`banc/extrait_image.py`) et en les comparant aux BMP que le pilote TWAIN a produits pendant les mêmes captures (`banc/image_brute.py comparer`).
+
+- Une ligne de balayage fait **7 776 o = 3 plans de 2 592 points**, dans l'ordre **rouge, vert, bleu**, 8 bits par échantillon, sans en-tête ni bourrage. Un bloc de 622 080 o porte 80 lignes.
+- Vérifié par la structure : l'écart moyen entre deux octets distants de 7 776 (même plan, ligne suivante) vaut 4,7, contre 23 à 2 592 (même point, plan voisin) et 3,9 à 1 (point voisin) sur 2a. Les échantillons voisins d'un même plan se ressemblent, ceux de deux plans non : les plans ne sont pas entrelacés point par point.
+- Vérifié par l'image : au décalage BMP(x, y) = brut(x + 4, y + 11), le plan 0 suit le rouge, le plan 1 le vert, le plan 2 le bleu du BMP couleur (corrélations 0,992, 0,999 et 0,998 sur la photo de `1e-couleur-300-recto-doc-couleur`, 0,999 à 1,000 sur `1e-couleur-300-recto`). Le même décalage vaut pour 2a.
+- 2 592 points = 8,64 po à 300 ppp, la largeur de la fenêtre. Le pilote Brother en garde 2 548, à partir du 5e point, et saute les 11 premières lignes. Sous la feuille, il complète jusqu'à 4 200 lignes (14 po) avec un fond sombre.
+- **Le gris du pilote Brother suit le plan vert** : corrélation 0,985 sur 2a, contre 0,957 pour le bleu, 0,814 pour le rouge et 0,974 pour la luminance 0,299 R + 0,587 V + 0,114 B.
+- Les valeurs brutes sont sombres : le pilote leur applique sur le PC une courbe de tons (un brut de 144 donne environ 244). Seule la forme de l'image est comparable, pas les octets. La correction varie peu d'une colonne à l'autre (110 à 116 pour un même brut, par tranches de 128 colonnes sur les 1 280 premières, photo couleur) : l'essentiel est une courbe globale (déduit).
+- À 600 dpi, la fenêtre ne double que la résolution Y : le scanner rend toujours 2 592 points par ligne, mais deux fois plus de lignes (65 blocs, 5 200 lignes). La largeur de 5 100 du BMP TWAIN est donc interpolée sur le PC (déduit).
+
+## 6. Questions ouvertes
 
 - Effet des SEND 0x83, 0x95, 0x96 : réglage en mémoire vive ou non volatile ? Capture Tool et TWAIN y envoient des valeurs différentes, chacun à chaque scan.
 - Rôle de 0x08 et des READ 0xA0, 0xA1 (16 o, l'interrogation de fond de Button Manager) et 0x69 (128 o, porte le numéro de série).
 - Sens du qualificatif 0x0A0D, de la longueur 2 091 744 du READ image (1 990 656 en recto-verso), du bit vendeur 0x80 de SCAN, des octets vendeur de la fenêtre.
 - Sens de l'octet 1 (`07`) des CDB vendeur et des sondages `ff 03` à `ff 06`.
+- Courbe de tons à appliquer pour retrouver la luminosité du pilote Brother, et rôle éventuel des lectures vendeur (0xA1, 0x69) dans cette correction.

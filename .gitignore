@@ -3,6 +3,10 @@ captures/
 *.pcapng
 # Images scannées et fichiers de pilotage des captures (banc/), hors dépôt
 *.bmp
+*.brut
+*.pgm
+*.ppm
+*.png
 images/
 capture.log
 demande.txt
