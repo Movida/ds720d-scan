@@ -16,3 +16,4 @@ Journal des étapes et des décisions, du plus ancien au plus récent.
 - Après redémarrage de Medabot : service `USBPcap` RUNNING, `USBPcapCMD.exe` présent. Aucune chaîne de compilation C installée.
 - 1a : docs alignées (CLAUDE.md, passation, création de cet historique).
 - 1b : capture de l'énumération (registre dans [docs/captures.md](docs/captures.md)). Premières observations : le logiciel Brother interroge le scanner en boucle avec une commande vendeur **0xC5**, environ 50 fois par seconde ; Windows envoie INQUIRY puis READ FORMAT CAPACITIES, que le scanner refuse (STALL puis REQUEST SENSE).
+- 1c : capture d'un scan gris 300 dpi. Le protocole Brother est fait de **commandes SCSI vendeur** et non d'écritures de secteurs : 0xC5 pour l'état et les réglages, 0xC3 pour lire l'image par blocs de 64 Kio. Bonne nouvelle pour la règle « jamais écrire sur F: ».

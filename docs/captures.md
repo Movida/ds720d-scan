@@ -15,7 +15,7 @@ USBPcapCMD est lancé par David dans un **Terminal (Admin)** (l'ouverture de `\\
 - `-b 8388608` : tampon de 8 Mo, pour ne pas perdre de trames pendant un scan.
 - Format de sortie : pcap classique, type de lien USBPcap.
 
-Piège : Ctrl+C rend l'invite, mais USBPcapCMD continue dans un second processus. L'arrêter avec `Stop-Process -Id <pid>` (pid donné par `Get-Process USBPcapCMD`). La dernière trame peut alors être tronquée.
+Piège : Ctrl+C rend l'invite, mais USBPcapCMD continue dans un second processus, élevé. L'arrêter depuis un terminal **administrateur** (ou le Gestionnaire des tâches) avec `Get-Process USBPcapCMD | Stop-Process` ; hors admin, Windows répond « Accès refusé ». La dernière trame peut alors être tronquée.
 
 ## Registre
 
@@ -32,3 +32,14 @@ Piège : Ctrl+C rend l'invite, mais USBPcapCMD continue dans un second processus
   - Trames 19225 à 19236 : deux INQUIRY (0x12) par CBW/CSW.
   - Trames 19237 à 19245 : READ FORMAT CAPACITIES (0x23), endpoint 0x81 en STALL, effacé par `URB_FUNCTION_SYNC_RESET_PIPE_AND_CLEAR_STALL`, CSW en échec ; suivi d'un REQUEST SENSE (0x03), trame 19246.
   - Ensuite, adresse 15 : 0xC5 encore, 5 034 fois en 95 s.
+
+### 1c-scan-gris-300.pcap (25/10/2026)
+
+- SHA-256 : `CD45A4B4FEBEF08F54EA839F76331C1F9B1F6AB6ABA96E0ACC3E5588C8D42255`
+- 63 680 924 o, 164 116 trames, environ 54 s. Scanner à l'adresse 15 du début à la fin.
+- Scénario : Capture Tool, une page sans données personnelles, gris, 300 dpi, recto.
+- Repères relevés avec tshark (à confirmer par notre analyseur en 1d) :
+  - Aucune commande d'écriture (pas de WRITE ni de FORMAT) : le protocole ne passe pas par des secteurs du faux disque.
+  - **0xC5** (vendeur), 21 370 CBW. Surtout en lecture (bit 7 de `bmCBWFlags` à 1) de 16 o (16 792) et 24 o (3 970) ; aussi 161 en écriture de 10 o, la première trame 78, puis toutes les 0,52 s environ ; 2 en écriture de 12 o.
+  - **0xC3** (vendeur), 740 CBW en lecture : 666 de 65 536 o et 74 de 32 256 o, soit 46 033 920 o. Première trame 82543 (10,66 s), dernière trame 128938 (17,43 s). Très probablement les données d'image ; le volume dépasse ce qu'attend une page A4 en gris 300 dpi (environ 8,7 Mo), à expliquer.
+  - Commandes standard de Windows sur le faux disque : TEST UNIT READY (56), READ CAPACITY(10) (3), MODE SENSE(6) (2), READ(10) des secteurs 0, 0x20 et 0x23 (FAT et répertoire).
