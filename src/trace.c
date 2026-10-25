@@ -1,0 +1,485 @@
+/*
+ * trace.c : écriture de la trace au format commun (docs/format-trace.md).
+ *
+ * Le texte produit reprend mot pour mot celui de banc/analyse_capture.py, pour que
+ * banc/compare_traces.py puisse confronter les deux traces sans traduction. Chaque
+ * décodage cite la section de spec qu'il applique, comme dans l'analyseur.
+ *
+ * Pourquoi décoder en C plutôt que tracer seulement les octets bruts et décoder
+ * après coup avec l'analyseur Python : on veut que notre programme « comprenne »
+ * lui-même ce qu'il reçoit (c'est le but de l'étape), et une trace lisible sur le
+ * moment évite d'enchaîner deux outils à chaque essai sur le scanner.
+ */
+#include "trace.h"
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Longueur maximale d'une ligne : le pire cas est un descripteur inconnu de
+ * 255 octets écrit en entier (3 caractères par octet). */
+#define LG_LIGNE 2048
+
+/* Octets de données montrés par ligne, comme l'option --octets 32 de l'analyseur. */
+#define OCTETS_MAX 32
+
+/* Préfixe des lignes de détail : alignées sous la colonne « détail ». */
+#define SUITE "                                    | "
+
+static FILE *fichier;           /* copie de la trace sur disque, ou NULL */
+static unsigned numero;         /* numéro d'ordre du transfert (colonne « trame ») */
+static LARGE_INTEGER t0, freq;  /* origine des temps et fréquence du compteur */
+
+/* État suivi entre deux appels, comme dans le décodeur de l'analyseur. */
+static uint8_t i_serie;         /* iSerialNumber lu dans le descripteur DEVICE, 0 si inconnu */
+static int cbw_en_cours;        /* un CBW attend son CSW */
+static uint32_t cbw_tag;
+static uint8_t cbw_cdb[16];
+static size_t cbw_lg_cdb;
+
+/* ------------------------------------------------------------------------- */
+/* Outils                                                                    */
+/* ------------------------------------------------------------------------- */
+
+static uint16_t le16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
+
+static uint32_t le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+/* Octets en hexadécimal séparés par des espaces ; au-delà de maxi (si maxi >= 0),
+ * on coupe et on ajoute « … », comme hexa() dans l'analyseur. */
+static void hexa(char *dst, size_t taille, const uint8_t *o, size_t lg, int maxi)
+{
+    size_t n = (maxi >= 0 && lg > (size_t)maxi) ? (size_t)maxi : lg;
+    size_t pos = 0;
+    dst[0] = '\0';
+    for (size_t i = 0; i < n && pos + 4 < taille; i++)
+        pos += (size_t)snprintf(dst + pos, taille - pos, i ? " %02x" : "%02x", o[i]);
+    if (n < lg)
+        snprintf(dst + pos, taille - pos, " \xE2\x80\xA6"); /* « … » en UTF-8 */
+}
+
+static void sortir(const char *texte)
+{
+    fputs(texte, stdout);
+    if (fichier)
+        fputs(texte, fichier);
+}
+
+static void ligne(const char *evenement, const char *detail)
+{
+    LARGE_INTEGER t;
+    char buf[LG_LIGNE + 64];
+    QueryPerformanceCounter(&t);
+    double s = (double)(t.QuadPart - t0.QuadPart) / (double)freq.QuadPart;
+    /* Mêmes largeurs que Decodeur.ligne() de l'analyseur. L'adresse USB vaut 0 :
+     * WinUSB ne la donne pas, et elle ne sert pas à la comparaison. */
+    snprintf(buf, sizeof buf, "%-8u %12.6f  %3u  %-10s %s\n", ++numero, s, 0u, evenement, detail);
+    sortir(buf);
+}
+
+static void suite(const char *detail)
+{
+    char buf[LG_LIGNE + 64];
+    snprintf(buf, sizeof buf, SUITE "%s\n", detail);
+    sortir(buf);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Paquets SETUP : USB 2.0 §9.3, table 9-2 ; requêtes standard, table 9-4 ;   */
+/* types de descripteur, table 9-5 ; requêtes de classe BOT §3.1 et §3.2.     */
+/* ------------------------------------------------------------------------- */
+
+static const char *requete_standard(uint8_t req)
+{
+    static const char *noms[] = {
+        "GET_STATUS", "CLEAR_FEATURE", NULL, "SET_FEATURE", NULL, "SET_ADDRESS",
+        "GET_DESCRIPTOR", "SET_DESCRIPTOR", "GET_CONFIGURATION", "SET_CONFIGURATION",
+        "GET_INTERFACE", "SET_INTERFACE", "SYNCH_FRAME",
+    };
+    return req < sizeof noms / sizeof noms[0] ? noms[req] : NULL;
+}
+
+static const char *type_descripteur(uint8_t type)
+{
+    switch (type) {
+    case 1: return "DEVICE";
+    case 2: return "CONFIGURATION";
+    case 3: return "STRING";
+    case 4: return "INTERFACE";
+    case 5: return "ENDPOINT";
+    case 6: return "DEVICE_QUALIFIER";
+    case 7: return "OTHER_SPEED_CONFIGURATION";
+    case 8: return "INTERFACE_POWER";
+    case 0x0F: return "BOS";
+    default: return NULL;
+    }
+}
+
+static void decrire_setup(char *dst, size_t taille, const uint8_t s[8])
+{
+    uint8_t bm = s[0], req = s[1];
+    uint16_t valeur = le16(s + 2), index = le16(s + 4), longueur = le16(s + 6);
+    const char *sens = (bm & 0x80) ? "IN" : "OUT";
+    unsigned genre = (bm >> 5) & 3; /* bmRequestType bits 6..5 : 0 standard, 1 classe, 2 vendeur */
+    char nom[32];
+
+    if (genre == 0) {
+        const char *n = requete_standard(req);
+        if (n)
+            snprintf(nom, sizeof nom, "%s", n);
+        else
+            snprintf(nom, sizeof nom, "STANDARD_0x%02X", req);
+        if (req == 6) { /* GET_DESCRIPTOR : wValue = type << 8 | index (§9.4.3) */
+            const char *t = type_descripteur((uint8_t)(valeur >> 8));
+            char tnom[8];
+            if (!t) {
+                snprintf(tnom, sizeof tnom, "0x%02X", valeur >> 8);
+                t = tnom;
+            }
+            snprintf(dst, taille, "%s %s index=%u langue=0x%04X wLength=%u (%s)",
+                     nom, t, valeur & 0xFFu, index, longueur, sens);
+            return;
+        }
+        if (req == 9) {
+            snprintf(dst, taille, "%s valeur=%u", nom, valeur);
+            return;
+        }
+        if (req == 11) {
+            snprintf(dst, taille, "%s interface=%u alternatif=%u", nom, index, valeur);
+            return;
+        }
+    } else if (genre == 1) {
+        if (req == 0xFF)
+            snprintf(nom, sizeof nom, "BULK_ONLY_RESET");
+        else if (req == 0xFE)
+            snprintf(nom, sizeof nom, "GET_MAX_LUN");
+        else
+            snprintf(nom, sizeof nom, "CLASSE_0x%02X", req);
+    } else if (genre == 2) {
+        snprintf(nom, sizeof nom, "VENDEUR_0x%02X", req);
+    } else {
+        snprintf(nom, sizeof nom, "R\xC3\x89SERV\xC3\x89_0x%02X", req); /* RÉSERVÉ */
+    }
+    snprintf(dst, taille, "%s wValue=0x%04X wIndex=0x%04X wLength=%u (%s)",
+             nom, valeur, index, longueur, sens);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Descripteurs : USB 2.0 §9.6. Une réponse CONFIGURATION contient la         */
+/* configuration puis ses interfaces et endpoints à la suite (§9.4.3).        */
+/* ------------------------------------------------------------------------- */
+
+static void decrire_descripteurs(const uint8_t *o, size_t lg_total, uint8_t index_chaine)
+{
+    static const char *types_endpoint[] = {"contr\xC3\xB4le", "isochrone", "bulk", "interruption"};
+    char buf[LG_LIGNE], hx[LG_LIGNE];
+    size_t i = 0;
+
+    while (i + 2 <= lg_total) {
+        uint8_t lg = o[i], typ = o[i + 1];
+        const uint8_t *d = o + i;
+        const char *tn = type_descripteur(typ);
+        if (lg < 2) {
+            snprintf(buf, sizeof buf, "bLength=%u invalide \xC3\xA0 l'octet %zu, arr\xC3\xAAt", lg, i);
+            suite(buf);
+            break;
+        }
+        if (i + lg > lg_total) {
+            /* Réponse plus courte que bLength : normal quand Windows ne demande que
+             * 2 octets pour lire bLength d'abord (trame 19204 de 1b). */
+            if (tn)
+                snprintf(buf, sizeof buf, "%s incomplet (%zu/%u o)", tn, lg_total - i, lg);
+            else
+                snprintf(buf, sizeof buf, "0x%x incomplet (%zu/%u o)", typ, lg_total - i, lg);
+            suite(buf);
+            break;
+        }
+        if (typ == 1 && lg >= 18) { /* DEVICE, table 9-8 */
+            uint16_t bcd = le16(d + 2);
+            snprintf(buf, sizeof buf,
+                     "DEVICE USB %x.%02x classe=%02X/%02X/%02X bMaxPacketSize0=%u VID=0x%04X "
+                     "PID=0x%04X bcdDevice=0x%04X iManufacturer=%u iProduct=%u iSerial=%u "
+                     "configurations=%u",
+                     bcd >> 8, bcd & 0xFFu, d[4], d[5], d[6], d[7], le16(d + 8), le16(d + 10),
+                     le16(d + 12), d[14], d[15], d[16], d[17]);
+        } else if (typ == 2 && lg >= 9) { /* CONFIGURATION, table 9-10 ; bMaxPower par 2 mA */
+            snprintf(buf, sizeof buf,
+                     "CONFIGURATION wTotalLength=%u interfaces=%u bConfigurationValue=%u "
+                     "attributs=0x%02X courant max=%u mA",
+                     le16(d + 2), d[4], d[5], d[7], d[8] * 2u);
+        } else if (typ == 4 && lg >= 9) { /* INTERFACE, table 9-12 */
+            snprintf(buf, sizeof buf, "INTERFACE n\xC2\xB0%u alt=%u endpoints=%u classe=%02X/%02X/%02X",
+                     d[2], d[3], d[4], d[5], d[6], d[7]);
+        } else if (typ == 5 && lg >= 7) { /* ENDPOINT, table 9-13 ; bit 7 de l'adresse = sens */
+            snprintf(buf, sizeof buf, "ENDPOINT 0x%02X (%s, %s) wMaxPacketSize=%u bInterval=%u",
+                     d[2], (d[2] & 0x80) ? "IN" : "OUT", types_endpoint[d[3] & 3], le16(d + 4), d[6]);
+        } else if (typ == 3 && index_chaine == 0) { /* §9.6.7 : liste de LANGID sur 16 bits */
+            size_t pos = (size_t)snprintf(buf, sizeof buf, "STRING 0 : langues ");
+            for (size_t k = 0; k < ((size_t)lg - 2) / 2; k++)
+                pos += (size_t)snprintf(buf + pos, sizeof buf - pos, k ? ", 0x%04X" : "0x%04X",
+                                        le16(d + 2 + 2 * k));
+        } else if (typ == 3) { /* §9.6.7 : texte en UTF-16LE */
+            WCHAR w[128];
+            char texte[512];
+            int n = (lg - 2) / 2; /* un éventuel octet impair final est ignoré */
+            memcpy(w, d + 2, (size_t)n * 2); /* copie : d + 2 n'est pas forcément aligné */
+            int lt = WideCharToMultiByte(CP_UTF8, 0, w, n, texte, (int)sizeof texte - 1, NULL, NULL);
+            texte[lt > 0 ? lt : 0] = '\0';
+            hexa(hx, sizeof hx, d + 2, (size_t)lg - 2, -1);
+            snprintf(buf, sizeof buf, "STRING \xC2\xAB %s \xC2\xBB (%s)", texte, hx);
+        } else {
+            char tnom[16];
+            if (!tn) {
+                snprintf(tnom, sizeof tnom, "type 0x%02X", typ);
+                tn = tnom;
+            }
+            hexa(hx, sizeof hx, d, lg, -1);
+            snprintf(buf, sizeof buf, "%s %u o : %s", tn, lg, hx);
+        }
+        suite(buf);
+        i += lg;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* SCSI : noms des opcodes (SPC-4, SBC-3, UFI 1.0) et réponses connues.       */
+/* ------------------------------------------------------------------------- */
+
+static void nom_opcode(char *dst, size_t taille, int op)
+{
+    /* Opcodes qui modifient le support ou le firmware : interdits par CLAUDE.md.
+     * Notre code ne les envoie jamais ; s'ils apparaissaient, la trace le crierait. */
+    static const struct { uint8_t op; const char *nom; } dangereux[] = {
+        {0x04, "FORMAT UNIT"}, {0x0A, "WRITE(6)"}, {0x2A, "WRITE(10)"},
+        {0x2E, "WRITE AND VERIFY(10)"}, {0x3B, "WRITE BUFFER"}, {0xAA, "WRITE(12)"},
+        {0x8A, "WRITE(16)"},
+    };
+    static const struct { uint8_t op; const char *nom; } connus[] = {
+        {0x00, "TEST UNIT READY"}, {0x03, "REQUEST SENSE"}, {0x12, "INQUIRY"},
+        {0x1A, "MODE SENSE(6)"}, {0x1B, "START STOP UNIT"}, {0x1E, "PREVENT ALLOW MEDIUM REMOVAL"},
+        {0x23, "READ FORMAT CAPACITIES"}, {0x25, "READ CAPACITY(10)"}, {0x28, "READ(10)"},
+        {0x5A, "MODE SENSE(10)"}, {0x9E, "SERVICE ACTION IN(16)"},
+    };
+    for (size_t k = 0; k < sizeof dangereux / sizeof dangereux[0]; k++)
+        if (dangereux[k].op == op) {
+            snprintf(dst, taille, "%s !! \xC3\x89" "CRITURE", dangereux[k].nom); /* ÉCRITURE */
+            return;
+        }
+    for (size_t k = 0; k < sizeof connus / sizeof connus[0]; k++)
+        if (connus[k].op == op) {
+            snprintf(dst, taille, "%s", connus[k].nom);
+            return;
+        }
+    if (op >= 0xC0) /* groupes 6 et 7 des codes d'opération : réservés aux fabricants (SPC-4) */
+        snprintf(dst, taille, "VENDEUR 0x%02X", op);
+    else
+        snprintf(dst, taille, "opcode 0x%02X", op & 0xFF);
+}
+
+/* Champ ASCII des données INQUIRY, sans les espaces de bourrage ; un octet
+ * non ASCII devient U+FFFD, comme decode("ascii", errors="replace"). */
+static void texte_ascii(char *dst, size_t taille, const uint8_t *o, size_t lg)
+{
+    size_t debut = 0, fin = lg, pos = 0;
+    while (debut < fin && (o[debut] == ' ' || o[debut] == '\t'))
+        debut++;
+    while (fin > debut && (o[fin - 1] == ' ' || o[fin - 1] == '\t'))
+        fin--;
+    for (size_t k = debut; k < fin && pos + 4 < taille; k++) {
+        if (o[k] < 0x80) {
+            dst[pos++] = (char)o[k];
+        } else {
+            memcpy(dst + pos, "\xEF\xBF\xBD", 3);
+            pos += 3;
+        }
+    }
+    dst[pos] = '\0';
+}
+
+static void decrire_reponse_scsi(const uint8_t *d, size_t lg)
+{
+    char buf[LG_LIGNE];
+    if (cbw_lg_cdb == 0 || lg == 0)
+        return;
+    if (cbw_cdb[0] == 0x12 && cbw_lg_cdb > 1 && !(cbw_cdb[1] & 1) && lg >= 36) {
+        /* Données INQUIRY standard (SPC-4, « Standard INQUIRY data ») : type de
+         * périphérique sur 5 bits, bit RMB, vendeur 8..15, produit 16..31, révision 32..35. */
+        char vendeur[64], produit[96], revision[32];
+        texte_ascii(vendeur, sizeof vendeur, d + 8, 8);
+        texte_ascii(produit, sizeof produit, d + 16, 16);
+        texte_ascii(revision, sizeof revision, d + 32, 4);
+        snprintf(buf, sizeof buf,
+                 "INQUIRY : type 0x%02X, amovible=%u, vendeur \xC2\xAB %s \xC2\xBB, "
+                 "produit \xC2\xAB %s \xC2\xBB, r\xC3\xA9vision \xC2\xAB %s \xC2\xBB",
+                 d[0] & 0x1F, d[1] >> 7, vendeur, produit, revision);
+        suite(buf);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Interface publique                                                        */
+/* ------------------------------------------------------------------------- */
+
+int trace_ouvrir(const char *chemin)
+{
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t0);
+    numero = 0;
+    i_serie = 0;
+    cbw_en_cours = 0;
+    if (chemin) {
+        /* Binaire : des fins de ligne \n seules, comme la sortie de l'analyseur
+         * redirigée par Python ; compare_traces.py accepte les deux. */
+        if (fopen_s(&fichier, chemin, "wb") != 0)
+            return -1;
+    }
+    sortir("# trame     temps (s)  adr  \xC3\xA9v\xC3\xA9nement  d\xC3\xA9tail\n");
+    return 0;
+}
+
+void trace_fermer(void)
+{
+    if (fichier) {
+        fclose(fichier);
+        fichier = NULL;
+    }
+}
+
+void trace_note(const char *format, ...)
+{
+    char buf[LG_LIGNE];
+    va_list ap;
+    va_start(ap, format);
+    buf[0] = '#';
+    buf[1] = ' ';
+    vsnprintf(buf + 2, sizeof buf - 3, format, ap);
+    va_end(ap);
+    strcat_s(buf, sizeof buf, "\n");
+    sortir(buf);
+}
+
+void trace_setup(const uint8_t setup[8])
+{
+    char hx[32], dec[256], buf[LG_LIGNE];
+    hexa(hx, sizeof hx, setup, 8, -1);
+    decrire_setup(dec, sizeof dec, setup);
+    snprintf(buf, sizeof buf, "%s  %s", hx, dec);
+    ligne("SETUP", buf);
+}
+
+void trace_ctrl_in(const uint8_t setup[8], const uint8_t *donnees, size_t lg)
+{
+    char hx[LG_LIGNE], buf[LG_LIGNE];
+    /* GET_DESCRIPTOR : requête standard (bits 6..5 à 0), entrante, bRequest = 6 (table 9-4). */
+    int get_descripteur = (setup[0] & 0x80) && (setup[0] & 0x60) == 0 && setup[1] == 6;
+
+    if (get_descripteur && setup[3] == 1 && lg >= 18)
+        i_serie = donnees[16]; /* iSerialNumber, table 9-8 */
+    if (get_descripteur && setup[3] == 3 && setup[2] != 0 && setup[2] == i_serie) {
+        /* Le numéro de série identifie l'appareil de David : il ne doit jamais
+         * finir dans une trace (CLAUDE.md). Notre code ne le demande pas, mais
+         * la trace le masquerait quand même. */
+        snprintf(buf, sizeof buf, "%zu o  (num\xC3\xA9ro de s\xC3\xA9rie masqu\xC3\xA9)", lg);
+        ligne("CTRL-IN", buf);
+        return;
+    }
+    hexa(hx, sizeof hx, donnees, lg, OCTETS_MAX);
+    snprintf(buf, sizeof buf, "%zu o  %s", lg, hx);
+    ligne("CTRL-IN", buf);
+    if (get_descripteur) {
+        decrire_descripteurs(donnees, lg, setup[2]);
+    } else if (setup[1] == 0xFE && (setup[0] & 0x60) == 0x20 && lg >= 1) {
+        snprintf(buf, sizeof buf, "plus haut LUN = %u", donnees[0]); /* BOT §3.2 */
+        suite(buf);
+    }
+}
+
+void trace_ctrl_out(const uint8_t *donnees, size_t lg)
+{
+    char hx[LG_LIGNE], buf[LG_LIGNE];
+    hexa(hx, sizeof hx, donnees, lg, OCTETS_MAX);
+    snprintf(buf, sizeof buf, "%zu o  %s", lg, hx);
+    ligne("CTRL-OUT", buf);
+}
+
+void trace_cbw(const uint8_t cbw[31])
+{
+    char hx[64], op[64], buf[LG_LIGNE];
+    /* CBW, BOT §5.1 : dCBWSignature 'USBC' (0x43425355), dCBWTag, dCBWDataTransferLength,
+     * bmCBWFlags (bit 7 = sens IN), bCBWLUN, bCBWCBLength, CBWCB[16]. Petit-boutiste. */
+    if (le32(cbw) != 0x43425355) {
+        trace_data_out(cbw, 31);
+        return;
+    }
+    cbw_tag = le32(cbw + 4);
+    cbw_lg_cdb = cbw[14] > 16 ? 16 : cbw[14];
+    memcpy(cbw_cdb, cbw + 15, 16);
+    cbw_en_cours = 1;
+    hexa(hx, sizeof hx, cbw_cdb, cbw_lg_cdb, -1);
+    nom_opcode(op, sizeof op, cbw_lg_cdb ? cbw_cdb[0] : -1);
+    snprintf(buf, sizeof buf, "tag=0x%08X lun=%u %s %u o  CDB[%zu]=%s  %s", cbw_tag, cbw[13],
+             (cbw[12] & 0x80) ? "IN" : "OUT", le32(cbw + 8), cbw_lg_cdb, hx, op);
+    ligne("CBW", buf);
+}
+
+void trace_data_in(const uint8_t *donnees, size_t lg)
+{
+    char hx[LG_LIGNE], buf[LG_LIGNE];
+    hexa(hx, sizeof hx, donnees, lg, OCTETS_MAX);
+    snprintf(buf, sizeof buf, "%zu o  %s", lg, hx);
+    ligne("DATA-IN", buf);
+    if (cbw_en_cours)
+        decrire_reponse_scsi(donnees, lg);
+}
+
+void trace_data_out(const uint8_t *donnees, size_t lg)
+{
+    char hx[LG_LIGNE], buf[LG_LIGNE];
+    hexa(hx, sizeof hx, donnees, lg, OCTETS_MAX);
+    snprintf(buf, sizeof buf, "%zu o  %s", lg, hx);
+    ligne("DATA-OUT", buf);
+}
+
+void trace_csw(const uint8_t csw[13])
+{
+    static const char *statuts[] = {"r\xC3\xA9ussite", "\xC3\xA9" "chec", "erreur de phase"}; /* BOT §5.2, table 5.3 */
+    char buf[LG_LIGNE], alerte[64] = "";
+    /* CSW, BOT §5.2 : dCSWSignature 'USBS' (0x53425355), dCSWTag, dCSWDataResidue, bCSWStatus. */
+    if (le32(csw) != 0x53425355) {
+        trace_data_in(csw, 13);
+        return;
+    }
+    uint32_t tag = le32(csw + 4);
+    uint8_t statut = csw[12];
+    if (!cbw_en_cours || tag != cbw_tag)
+        snprintf(alerte, sizeof alerte, "  !! tag inattendu (CBW 0x%08X)", cbw_en_cours ? cbw_tag : 0u);
+    cbw_en_cours = 0;
+    snprintf(buf, sizeof buf, "tag=0x%08X statut=%u (%s) r\xC3\xA9sidu=%u%s", tag, statut,
+             statut < 3 ? statuts[statut] : "?", le32(csw + 8), alerte);
+    ligne("CSW", buf);
+}
+
+void trace_erreur(uint8_t endpoint, const char *type, unsigned long code_win32)
+{
+    /* L'analyseur affiche le code USBD_STATUS vu par USBPcap ; WinUSB ne nous
+     * rend qu'un code Win32. Les plus probables sont nommés, les autres en clair. */
+    const char *nom;
+    char buf[256];
+    switch (code_win32) {
+    case ERROR_GEN_FAILURE: nom = "ERROR_GEN_FAILURE (STALL probable)"; break;
+    case ERROR_SEM_TIMEOUT: nom = "ERROR_SEM_TIMEOUT"; break;
+    case ERROR_INVALID_PARAMETER: nom = "ERROR_INVALID_PARAMETER"; break;
+    case ERROR_OPERATION_ABORTED: nom = "ERROR_OPERATION_ABORTED"; break;
+    case ERROR_BAD_COMMAND: nom = "ERROR_BAD_COMMAND"; break;
+    case ERROR_DEVICE_NOT_CONNECTED: nom = "ERROR_DEVICE_NOT_CONNECTED"; break;
+    default: nom = "?"; break;
+    }
+    snprintf(buf, sizeof buf, "ep=0x%02X %s Win32=%lu %s", endpoint, type, code_win32, nom);
+    ligne("ERREUR", buf);
+}

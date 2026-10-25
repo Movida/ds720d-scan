@@ -31,10 +31,16 @@ Une ligne par évènement USB. L'analyseur de captures (`banc/analyse_capture.py
 | `DATA-OUT` | hôte → appareil | données envoyées pendant une commande sortante | BOT §5.1 (bmCBWFlags) |
 | `DATA-IN` | appareil → hôte | données reçues pendant une commande entrante, réponse décodée en dessous si connue | BOT §5.1 ; SPC-4 |
 | `CSW` | appareil → hôte | tag, statut, résidu | BOT §5.2 |
-| `ERREUR` | — | endpoint et code `USBD_STATUS_*` d'un transfert qui a échoué (ex. STALL) | WDK usb.h |
+| `ERREUR` | — | endpoint et code `USBD_STATUS_*` d'un transfert qui a échoué (ex. STALL) ; dans notre code, le code Win32 rendu par WinUSB | WDK usb.h |
 | `URB` | hôte | URB sans données, ex. `SYNC_RESET_PIPE_AND_CLEAR_STALL` | WDK usb.h |
 | `INT-IN` | appareil → hôte | données d'un transfert d'interruption | USB 2.0 §5.7 |
 
 Les lignes qui commencent par `|` détaillent la ligne précédente (descripteur, sense, INQUIRY, capacité).
 
 Un opcode qui écrit sur le support ou le firmware (WRITE, FORMAT UNIT, WRITE BUFFER…) est marqué `!! ÉCRITURE`.
+
+## Côté C et comparaison
+
+- `src/trace.c` écrit ce format pour notre code, avec les mêmes décodages et le même texte que l'analyseur. L'adresse vaut 0 : WinUSB ne la donne pas.
+- `banc/compare_traces.py REFERENCE NOTRE` compare l'évènement et le détail de chaque ligne, sans les colonnes trame, temps et adresse. `--sans-trames A-B` écarte des trames de la référence, `--sans-notre A-B` des transferts de notre trace, `--sans-tags` ignore les tags des CBW et CSW, choisis librement par chaque hôte (BOT §5.1).
+- Banc d'essai sans scanner : `construire.cmd`, puis `out\essai_trace.exe out\essai.txt` rejoue l'énumération de `1b-enumeration.pcap`, à comparer à `analyse_capture.py … --adresse 15 --de 19191 --a 19236` avec `--sans-trames 19207-19213 --sans-notre 11-14` (le numéro de série, remplacé par un faux dans l'essai).
