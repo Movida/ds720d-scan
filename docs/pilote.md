@@ -195,3 +195,11 @@ Pièges :
 - En `METHOD_BUFFERED`, entrée et sortie partagent le même tampon système : le pilote recopie l'en-tête d'entrée avant tout, et n'écrit l'en-tête de sortie qu'après le transport, pour ne pas écraser des données sortantes encore à envoyer.
 - Une requête qui finit en erreur n'est pas recopiée vers l'outil par le gestionnaire d'E/S : `IOCTL_DS720D_BOT` réussit dès que le pilote l'a traitée, l'échec du transport est dans la sortie ; seul un refus de la barrière ou une requête mal formée la fait échouer.
 - Heredoc de Git Bash et barres obliques inverses : un script Python passé par heredoc a perdu ses `\` (`\b`, `\e`) ; le `Makefile` se modifie par l'outil d'édition.
+
+### 6f : le tunnel 0xC5 par le pilote (25/10)
+
+Aucun code nouveau : `ds720d.c` et `tunnel.c` passent déjà par `client_noyau.c`, et la barrière du pilote connaît les lectures et dépôts 0xC5 observés (6e). Vérifié dans la VM, sans élévation (capture `6f-tunnel`) :
+1. `ds720dk etat` (prise de contact du logiciel Brother : signature « NOVA », sondages, identifiants) : réussi ; 26 commandes, identiques à celles de `ds720d.exe` sous WinUSB en 5d.
+2. `ds720dk papier` sans feuille : « pas de feuille » ; 53 commandes, identiques à celles de 3d (`3d-trace-sans-2`), dont le dépôt de 0x08.
+3. `ds720dk papier` avec une feuille engagée : « feuille engagée », feuille non entraînée ; 187 commandes, identiques à celles de 3d (`3d-trace-avec`), dont six dépôts (0x08 et READ 0xA0).
+4. Capture contre traces de `ds720dk.exe` : concordance parfaite, tags compris (105, 212 et 742 lignes, les mêmes nombres qu'en 3c et 3d). Contre les traces de WinUSB, seules diffèrent quelques réponses de sondage (`ff 03`, `ff 05`, octet 8), qui varient d'un passage à l'autre (docs/protocole.md §2) : les commandes ont été comparées seules, réponses écartées.
