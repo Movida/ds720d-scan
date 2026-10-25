@@ -53,6 +53,8 @@ pnputil /scan-devices
 
 Vérification : service `USBSTOR`, F: revenu, et `py banc/twain_banc.py lister` voit la source TWAIN du DS-720D.
 
+Après un retour (ou un aller qui suit un retour), débrancher et rebrancher le câble du scanner avant toute capture : USBPcap ne suit plus un appareil recréé par `pnputil` (voir docs/captures.md).
+
 ## Historique des bascules
 
 | Date | Sens | Résultat |
@@ -60,3 +62,4 @@ Vérification : service `USBSTOR`, F: revenu, et `py banc/twain_banc.py lister` 
 | 25/10/2026 | USBSTOR → WinUSB | réussi avec `bascule_winusb.exe --oui` : classe USBDevice, service WINUSB, section WINUSB, F: absent, disque WD intact |
 | 25/10/2026 | WinUSB → USBSTOR | réussi avec les deux commandes `pnputil` : classe USB, service USBSTOR, section `USBSTOR_BULK.NT`, F: revenu, `twain_banc.py lister` lit les réglages de la source Brother |
 | 25/10/2026 | USBSTOR → WinUSB | réussi à nouveau avec `bascule_winusb.exe --oui` ; le scanner reste sous WinUSB pour la suite de l'étape 2 |
+| 25/10/2026 | rebranchement physique | toujours WinUSB : le choix de pilote est attaché à l'appareil (son numéro de série), pas à la session |

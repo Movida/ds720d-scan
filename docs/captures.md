@@ -125,3 +125,14 @@ Constats, à approfondir à l'étape 3 :
 - Déroulé : premier 0xC5 à 1,71 s, rafale d'écritures 0xC5 de 10, 12, 28 et 89 o entre 1,72 et 1,87 s, lectures 0xC3 de 3,0 à 6,9 s, plus rien après 8,8 s.
 - 0xC3 : 170 lectures (153 de 65 536 o, 17 de 32 256 o), 10 575 360 o, environ la moitié des autres scans gris 300 (19 906 560 o). Expliqué par David : feuille plus petite qu'un A4, passée dans l'autre sens. Le volume suit la longueur de feuille qui passe, comme pour la photo de `1e-couleur-300-recto-doc-couleur`.
 - Piste, **déduite et non vérifiée**, pour l'étape 3 : le premier octet des données écrites par 0xC5 ressemble à un opcode SCSI emballé dans la commande vendeur (0x08, 0x16, 0x1B, 0x24, 0x28, 0x2A). Le bloc de 89 o commence par 0x24, et contient `01 2c 01 2c`, soit 300 × 300 en gros-boutiste : il pourrait s'agir d'un SET WINDOW, la commande de réglage de fenêtre des scanners SCSI (SCSI-2, chapitre « Scanner devices »). 0xC5 servirait de tunnel vers un jeu de commandes scanner.
+
+## Captures de notre code (étape 2)
+
+Même méthode (tâche planifiée, `-s 262144`), mais c'est notre programme qui parle au scanner, sous WinUSB. Elles servent au contrôle croisé : notre trace, la capture de notre passage et la référence doivent concorder (`banc/compare_traces.py`).
+
+**Piège** : après une bascule par `pnputil /remove-device` puis `/scan-devices`, USBPcap ne voit plus le scanner (`2d-descripteurs.pcap`, 25/10 : aucune trame du scanner alors que le programme a bien échangé avec lui). Un débranchement physique du câble suffit à le rattacher. Le scanner garde alors WinUSB.
+
+| Capture | Scénario | Résultat | SHA-256 |
+| --- | --- | --- | --- |
+| `2d-descripteurs` | `ds720d descripteurs`, juste après la bascule | aucune trame du scanner (piège ci-dessus) | `F08FAB1899BB16464C557A0EB3AEF87A0EAF61D78FBC13ADA76497B167972173` |
+| `2d-descripteurs-2` | `ds720d descripteurs`, après rebranchement (adresse 31) | 5 SETUP, 0 erreur ; concordance parfaite avec notre trace et avec 1b (trames 19191 à 19206) | `28194EAA734C05FB82D50CD83751229E5E20E169E6EBD5BD287369315BC8FD7F` |
