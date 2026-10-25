@@ -1,6 +1,12 @@
 captures/
 *.pcap
 *.pcapng
+# Images scannées et fichiers de pilotage des captures (banc/), hors dépôt
+*.bmp
+images/
+capture.log
+demande.txt
+stop
 __pycache__/
 .venv/
 *.pyc

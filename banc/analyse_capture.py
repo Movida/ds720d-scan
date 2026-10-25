@@ -359,9 +359,11 @@ class Decodeur:
     """Suit l'état d'un appareil (contrôles en vol, commande BOT en cours) et
     transforme les paquets USBPcap en lignes du format de trace commun."""
 
-    def __init__(self, octets_max, masques):
+    def __init__(self, octets_max, masques, montrer_serie=False):
         self.octets_max = octets_max
         self.masques = masques
+        self.montrer_serie = montrer_serie
+        self.i_serie = {}      # adresse -> index du descripteur STRING du numéro de série
         self.setups = {}       # irp_id -> paquet SETUP (pour décoder la réponse)
         self.cbw = {}          # adresse -> (tag, opcode, CDB) de la commande en cours
         self.stats = Counter()
@@ -408,9 +410,17 @@ class Decodeur:
         if p.etape == ETAPE_DATA and not p.retour and p.donnees:
             return [self.ligne(p, "CTRL-OUT", f"{len(p.donnees)} o  {hexa(p.donnees, self.octets_max)}")]
         if p.retour and p.donnees and p.etape in (ETAPE_DATA, ETAPE_COMPLETE):
-            lignes = [self.ligne(p, "CTRL-IN", f"{len(p.donnees)} o  {hexa(p.donnees, self.octets_max)}")]
             setup = self.setups.pop(p.irp_id, None)
-            if setup and setup[0] & 0x80 and setup[0] & 0x60 == 0 and setup[1] == 6:
+            get_descripteur = setup and setup[0] & 0x80 and setup[0] & 0x60 == 0 and setup[1] == 6
+            if get_descripteur and setup[3] == 1 and len(p.donnees) >= 18:
+                self.i_serie[p.adresse] = p.donnees[16]  # iSerialNumber (table 9-8)
+            if (get_descripteur and setup[3] == 3 and setup[2] != 0
+                    and setup[2] == self.i_serie.get(p.adresse) and not self.montrer_serie):
+                # Le numéro de série identifie l'appareil de David : masqué par défaut,
+                # pour qu'il ne finisse pas dans le dépôt au détour d'une trace copiée.
+                return [self.ligne(p, "CTRL-IN", f"{len(p.donnees)} o  (numéro de série masqué, --serie)")]
+            lignes = [self.ligne(p, "CTRL-IN", f"{len(p.donnees)} o  {hexa(p.donnees, self.octets_max)}")]
+            if get_descripteur:
                 lignes += [SUITE + l for l in decrire_descripteurs(p.donnees, index_chaine=setup[2])]
             elif setup and setup[1] == 0xFE and setup[0] & 0x60 == 0x20:
                 lignes.append(SUITE + f"plus haut LUN = {p.donnees[0]}")
@@ -526,6 +536,8 @@ def main():
     ap.add_argument("--a", type=int, default=None, metavar="TRAME", help="dernière trame affichée")
     ap.add_argument("--resume", action="store_true", help="statistiques seulement")
     ap.add_argument("--brut", action="store_true", help="en-têtes USBPcap bruts, sans décodage")
+    ap.add_argument("--serie", action="store_true",
+                    help="afficher le numéro de série de l'appareil (masqué par défaut)")
     args = ap.parse_args()
 
     # La console Windows n'est pas toujours en UTF-8 ; on l'impose pour les accents.
@@ -542,7 +554,7 @@ def main():
                 print(f"  --adresse {adr}   ({n} CBW)", file=sys.stderr)
             return 2
 
-    dec = Decodeur(args.octets, set(args.masquer))
+    dec = Decodeur(args.octets, set(args.masquer), args.serie)
     par_adresse = Counter()
     print(f"# capture {args.capture}, adresse(s) {sorted(adresses)}")
     if not args.resume and not args.brut:

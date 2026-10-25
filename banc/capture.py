@@ -4,8 +4,9 @@ La tâche « ds720d-capture » exécute banc/capture_admin.ps1 avec les droits a
 (installation : docs/captures.md). Ce module ne fait que déposer les fichiers
 convenus dans le dossier des captures et lire le journal :
   demande.txt  nom, concentrateur et durée maximale de la capture ;
-  stop         demande d'arrêt ;
-  capture.log  « début NOM … » puis « fin NOM (taille o) », ou « refus : … ».
+  stop         demande d'arrêt, que ce module crée puis efface ;
+  C:\\ProgramData\\ds720d\\capture.log  « début NOM … » puis « fin NOM (taille o) »,
+               ou « refus : … » (écrit par le script admin, lu ici).
 
 Usage :
   py banc/capture.py demarrer NOM [--hub 1] [--duree 300]
@@ -21,7 +22,9 @@ from pathlib import Path
 DOSSIER = Path(r"C:\Users\morva\ds720d-captures")
 DEMANDE = DOSSIER / "demande.txt"
 STOP = DOSSIER / "stop"
-JOURNAL = DOSSIER / "capture.log"
+# Le journal est écrit par le script admin dans son propre dossier, que nous ne
+# pouvons que lire : une écriture admin dans un dossier à nous pourrait être détournée.
+JOURNAL = Path(r"C:\ProgramData\ds720d\capture.log")
 TACHE = "ds720d-capture"
 
 
@@ -46,6 +49,7 @@ def attendre_ligne(depart, predicat, delai):
 
 def demarrer(nom, hub=1, duree=300):
     depart = len(lignes_journal())
+    STOP.unlink(missing_ok=True)  # le script admin n'efface rien dans notre dossier
     DEMANDE.write_text(f"nom={nom}\nhub={hub}\nduree={duree}\n", encoding="ascii")
     subprocess.run(["schtasks", "/run", "/tn", TACHE], check=True, capture_output=True)
     ligne = attendre_ligne(depart, lambda l: f" début {nom} " in l or " refus : " in l, 20)
@@ -60,6 +64,7 @@ def arreter(nom):
     depart = len(lignes_journal())
     STOP.touch()
     ligne = attendre_ligne(depart, lambda l: f" fin {nom} " in l, 20)
+    STOP.unlink(missing_ok=True)
     if ligne is None:
         raise RuntimeError("la tâche n'a pas confirmé l'arrêt (voir capture.log)")
     return ligne

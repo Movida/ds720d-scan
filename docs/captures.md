@@ -14,16 +14,17 @@ USBPcapCMD est lancé par David dans un **Terminal (Admin)** (l'ouverture de `\\
 - `-A` : tous les appareils du concentrateur. Ce USBPcapCMD n'a pas d'option « nouveaux appareils », et le scanner change d'adresse quand on le rebranche ; un filtre `--devices` le perdrait.
 - `-b 8388608` : tampon de 8 Mo, pour ne pas perdre de trames pendant un scan.
 - Format de sortie : pcap classique, type de lien USBPcap.
-- **À ajouter désormais : `-s 262144`.** La longueur de capture par défaut (65 535 o) coupe les blocs d'image de 65 536 o : avec les 27 o d'en-tête USBPcap, il manque 28 o de données par bloc. `py banc/analyse_capture.py <capture> --adresse N --resume` doit afficher « trames tronquées : 0 ».
+- **À ajouter désormais : `-s 262144`.** La longueur de capture par défaut (65 535 o) coupe les blocs d'image de 65 536 o : avec les 27 o d'en-tête USBPcap, il manque 28 o de données par bloc. `py banc/analyse_capture.py <capture> --adresse N --resume` doit afficher « trames tronquées à la capture (snaplen) : 0 ».
 
 ### Capture pilotée par Claude (depuis 1e)
 
-`banc/capture_admin.ps1` tourne avec les droits admin via une tâche planifiée que David a créée une fois. Claude la déclenche sans élévation : il écrit `demande.txt` (`nom=…`, `hub=1`, `duree=300`) dans le dossier des captures, lance `schtasks /run /tn ds720d-capture`, puis crée le fichier `stop` pour arrêter. Le script refuse tout nom ou valeur hors des formats prévus, n'écrase jamais une capture et note tout dans `capture.log`.
+`banc/capture_admin.ps1` tourne avec les droits admin via une tâche planifiée que David a créée une fois. Claude la déclenche sans élévation : il écrit `demande.txt` (`nom=…`, `hub=1`, `duree=300`) dans le dossier des captures, lance `schtasks /run /tn ds720d-capture`, puis crée le fichier `stop` pour arrêter et l'efface ensuite. Le script refuse tout nom ou valeur hors des formats prévus, refuse un dossier ou une demande qui serait un lien (jonction, lien symbolique), n'écrase jamais une capture, n'arrête que ses propres USBPcapCMD et tient son journal dans `C:\ProgramData\ds720d\capture.log`, que Claude peut lire mais pas modifier.
 
 Installation, une fois, par David dans un terminal administrateur. Le script est copié dans un dossier que seul un administrateur peut modifier : changer la version du dépôt n'a d'effet qu'après une nouvelle copie par David.
 
 ```
 New-Item -ItemType Directory -Force C:\ProgramData\ds720d | Out-Null
+icacls C:\ProgramData\ds720d /setowner "*S-1-5-32-544" /T
 icacls C:\ProgramData\ds720d /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX"
 Copy-Item C:\Users\morva\claude-chrome\ds720d-scan\banc\capture_admin.ps1 C:\ProgramData\ds720d\
 $action = New-ScheduledTaskAction -Execute powershell.exe -Argument '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\ProgramData\ds720d\capture_admin.ps1'
@@ -33,6 +34,8 @@ Register-ScheduledTask -TaskName ds720d-capture -Action $action -Principal $prin
 ```
 
 (SID : `S-1-5-32-544` Administrateurs, `S-1-5-18` Système, `S-1-5-32-545` Utilisateurs, en lecture et exécution seulement.)
+
+Mise à jour du script (après une modification dans le dépôt, relue par David) : `Copy-Item C:\Users\morva\claude-chrome\ds720d-scan\banc\capture_admin.ps1 C:\ProgramData\ds720d\ -Force`, dans un terminal administrateur.
 
 Désinstallation : `Unregister-ScheduledTask ds720d-capture -Confirm:$false; Remove-Item -Recurse C:\ProgramData\ds720d`.
 
@@ -47,7 +50,7 @@ py banc/twain_banc.py scanner --mode gris --dpi 300 --regle 0x1150=0 --regle 0x1
 
 - `--regle 0x1150=0 --regle 0x1151=0` coupe le recadrage et le redressement automatiques (codes TWAIN des capabilities AUTOMATICBORDERDETECTION et AUTOMATICDESKEW), faits par le PC après coup.
 - Images en BMP dans `ds720d-captures\images\` (transfert TWAIN par fichier ; le transfert natif rend un handle tronqué à 32 bits).
-- Brother Button Manager (`moon.exe`, systray) interroge le scanner toutes les 0,5 s : son trafic 0xC5 apparaît dans toutes les captures.
+- Brother Button Manager (`moon.exe`, systray) interroge le scanner par salves d'environ 50 commandes 0xC5, un cycle toutes les 0,52 s : ce trafic apparaît dans toutes les captures.
 
 Analyse : `banc/analyse_capture.py` (trace au [format commun](format-trace.md)), vérifié par `banc/contre_verif.py` contre tshark.
 
@@ -77,10 +80,10 @@ Piège : Ctrl+C rend l'invite, mais USBPcapCMD continue dans un second processus
 - **Défaut** : capturée avec la longueur par défaut, 666 blocs d'image de 65 536 o y sont tronqués de 28 o. Bonne pour étudier le protocole, inutilisable pour reconstruire l'image.
 - Repères relevés avec tshark, confirmés par l'analyseur en 1d (`contre_verif.py` : 0 écart sur 22 175 CBW et 22 175 CSW) :
   - Aucune commande d'écriture (pas de WRITE ni de FORMAT) : le protocole ne passe pas par des secteurs du faux disque.
-  - **0xC5** (vendeur), 21 370 CBW. Surtout en lecture (bit 7 de `bmCBWFlags` à 1) de 16 o (16 792) et 24 o (3 970) ; aussi 161 en écriture de 10 o, la première trame 78, puis toutes les 0,52 s environ ; 2 en écriture de 12 o.
+  - **0xC5** (vendeur), 21 370 CBW. Surtout en lecture (bit 7 de `bmCBWFlags` à 1) de 16 o (16 792) et 24 o (3 970) ; aussi 161 en écriture de 10 o, la première trame 78, puis toutes les 0,52 s environ  ; en écriture aussi, 2 de 12 o, 1 de 28 o et 1 de 89 o.
   - **0xC3** (vendeur), 740 CBW en lecture : 666 de 65 536 o et 74 de 32 256 o, soit 46 033 920 o. Première trame 82543 (10,66 s), dernière trame 128938 (17,43 s). Très probablement les données d'image ; le volume dépasse ce qu'attend une page A4 en gris 300 dpi (environ 8,7 Mo), à expliquer.
   - Commandes standard de Windows sur le faux disque : TEST UNIT READY (56), READ CAPACITY(10) (3), MODE SENSE(6) (2), READ(10) des secteurs 0, 0x20 et 0x23 (FAT et répertoire).
-  - Pistes, **déduites et non vérifiées**, pour l'étape 3 : tous les CDB vendeur font 16 o et commencent par `xx 07`, puis les octets 2 à 5 ressemblent à une adresse et les octets 6 à 9 à la longueur de données, en gros-boutiste. Pour 0xC3, la lecture de 0x7E00 o à `0x01597600` est suivie d'une lecture à `0x0159F400`, soit 0x7E00 plus loin ; chaque CDB 0xC3 apparaît deux fois. Pour 0xC5, l'adresse vaut 0 et les octets 10 à 12 changent (`ff 04 00`, `02 01 02`, `02 02 02`…), comme un numéro de registre ou de canal.
+  - Pistes, **déduites et non vérifiées**, pour l'étape 3 : tous les CDB vendeur font 16 o et commencent par `xx 07`, puis les octets 2 à 5 ressemblent à une adresse et les octets 6 à 9 à la longueur de données, en gros-boutiste. Pour 0xC3, la lecture de 0x7E00 o à `0x01597600` est suivie d'une lecture à `0x0159F400`, soit 0x7E00 plus loin  ; dans cette capture (Capture Tool), chaque CDB 0xC3 est lu deux fois. Pour 0xC5, l'adresse vaut 0 et les octets 10 à 12 changent (`ff 04 00`, `02 01 02`, `02 02 02`…), comme un numéro de registre ou de canal.
 
 ### Série 1e (25/10/2026)
 
@@ -100,10 +103,15 @@ Toutes avec `-s 262144` : 0 trame tronquée. Scanner à l'adresse 15. « Piloté
 | `1e-sans-papier` | pilotée, délai 0x925A à 1 s, « Aucun document » | — | `FFAE4A1C159939AAC3A474AD75B9E3D18D60DEB3B4B583B2EF1A922DAFC8ED78` |
 | `1e-gris-600-recto` | pilotée, gris 600, image 5100 × 8400 | 40 435 200 | `AABA5971843C631CBF3A4ED06B4F2E8DA0F5766DD82E7EB356313261672D69BA` |
 | `1e-nb-300-recto` | pilotée, noir et blanc 300, d'abord « Aucun document » puis scan | 19 906 560 | `9A3D8E41A3759D480ADB4810644C5F0827A2B52541C7C44F7A8B88A357AB8CDC` |
+| `1e-gris-150-recto` | pilotée, gris 150, image 1272 × 2100 | 19 906 560 | `6A063FFAD07C2A4D09256B522F40E26E455B996036F2892A4C293A033D4091C0` |
+| `1e-couleur-300-recto-doc-couleur` | pilotée, couleur 300, photo plus courte qu'un A4 (dinosaure vert, cœur rouge, ciel bleu) | 12 441 600 | `9FDFAA6C3EAB0772A19675B2F3A6558343F9CF2BCFC4CFE8ACCA590A19418E74` |
 
 Constats, à approfondir à l'étape 3 :
-- **Le volume lu par 0xC3 ne dépend pas du mode** à 300 dpi : 19 906 560 o en gris, en couleur et en noir et blanc. Le scanner enverrait toujours les mêmes données, et le pilote Brother ferait le gris ou le noir et blanc sur le PC (déduction).
-- À 600 dpi, le volume ne fait que doubler (40 435 200 o), alors que l'image a quatre fois plus de pixels.
+- **Le volume lu par 0xC3 ne dépend ni du mode ni de la résolution jusqu'à 300 dpi** : 320 lectures, toutes à des adresses différentes, soit 19 906 560 o en gris, couleur et noir et blanc à 300 dpi comme en gris à 150 dpi. Le scanner enverrait toujours la même chose, et le pilote Brother ferait la réduction, le gris ou le noir et blanc sur le PC (déduction).
+- Il suit en revanche la longueur de la feuille : 12 441 600 o pour la photo plus courte qu'un A4, alors que l'image rendue garde 2548 × 4200.
+- À 600 dpi, le volume ne fait que doubler (40 435 200 o, 650 lectures), alors que l'image a quatre fois plus de pixels.
+- Les adresses lues reviennent : 370 adresses distinctes au plus (23 016 960 o) dans toutes les captures, et au-delà (600 dpi, recto-verso) les mêmes adresses sont relues. Piste : une mémoire tampon circulaire dans le scanner. Dans `1c` (Capture Tool), chaque bloc est en plus lu deux fois.
+- Écritures 0xC5 d'effet inconnu, à comprendre avant tout rejeu : 10 o (le cycle de Button Manager), 12 o, 28 o, 89 o et, dans `1e-gris-300-recto`, 2 de 138 o.
 - Ni l'approche, ni le retrait, ni la remise d'une feuille ne changent la moindre réponse aux interrogations de Button Manager. L'évènement `81 03 00 00 00 00 01 00`, vu une fois dans `1e-gris-300-recto` juste avant le scan, reste inexpliqué.
 - Pilote TWAIN Brother : il ignore `CAP_XFERCOUNT` et attend une feuille de plus après chaque feuille ; le réglage `0x925A` est ce délai en secondes (déduit : à 1 s, « Aucun document » immédiat).
 - `contre_verif.py` sur `1e-couleur-300-recto` : 0 écart sur 29 155 CBW et 29 155 CSW.

@@ -55,6 +55,7 @@ TWRC_SUCCESS, TWRC_FAILURE, TWRC_CHECKSTATUS, TWRC_CANCEL = 0, 1, 2, 3
 TWRC_NOTDSEVENT, TWRC_XFERDONE, TWRC_ENDOFLIST = 5, 6, 7
 
 TWON_ARRAY, TWON_ENUMERATION, TWON_ONEVALUE, TWON_RANGE = 3, 4, 5, 6
+TWON_DONTCARE16 = 0xFFFF
 NOMS_CONTENEUR = {3: "ARRAY", 4: "ENUMERATION", 5: "ONEVALUE", 6: "RANGE"}
 
 # Types d'éléments : (format struct, taille en octets, nom).
@@ -188,8 +189,10 @@ def fix32_vers_float(brut):
 
 
 def float_vers_fix32(valeur):
-    entier = int(valeur)
-    frac = int(round((valeur - entier) * 65536)) & 0xFFFF
+    # TW_FIX32 vaut Whole + Frac/65536 avec Frac positif : il faut arrondir Whole vers
+    # le bas (-12,5 = -13 + 32768/65536), pas tronquer vers zéro comme int().
+    brut = round(valeur * 65536)
+    entier, frac = brut >> 16, brut & 0xFFFF
     return struct.unpack("<I", struct.pack("<hH", entier, frac))[0]
 
 
@@ -303,7 +306,7 @@ class Session:
 
     def lire_cap(self, code, msg=MSG_GET):
         """Renvoie (conteneur, type, contenu) ; le contenu dépend du conteneur."""
-        cap = TW_CAPABILITY(Cap=code, ConType=0, hContainer=None)
+        cap = TW_CAPABILITY(Cap=code, ConType=TWON_DONTCARE16, hContainer=None)
         rc = self.appel(DG_CONTROL, DAT_CAPABILITY, msg, cap)
         if rc != TWRC_SUCCESS:
             raise ErreurTwain(f"lecture {nom_cap(code)} : {TWRC.get(rc, rc)}, condition {self.statut()}")
@@ -319,7 +322,8 @@ class Session:
         """MSG_SET avec un TW_ONEVALUE : ItemType (2 o) puis Item (4 o)."""
         h = kernel32.GlobalAlloc(GHND, 6)
         ptr = kernel32.GlobalLock(h)
-        ctypes.memmove(ptr, struct.pack("<HI", type_item, valeur), 6)
+        # & 0xFFFFFFFF : un entier négatif (type INT) s'écrit en complément à deux.
+        ctypes.memmove(ptr, struct.pack("<HI", type_item, valeur & 0xFFFFFFFF), 6)
         kernel32.GlobalUnlock(h)
         cap = TW_CAPABILITY(Cap=code, ConType=TWON_ONEVALUE, hContainer=h)
         try:
@@ -489,10 +493,14 @@ def transferer(s, sortie, base, deja, debut, attendues):
         else:
             raise ErreurTwain(f"transfert : {TWRC.get(rc, rc)}, condition {s.statut()}")
         if deja + len(images) >= attendues:
-            # Dernière image voulue : MSG_RESET au lieu de MSG_ENDXFER. Le pilote Brother
-            # ignore CAP_XFERCOUNT et, dans MSG_ENDXFER, attend une feuille de plus pendant
-            # le délai du réglage 0x925A (30 s par défaut) ; MSG_RESET vide la file d'attente.
-            s.appel(DG_CONTROL, DAT_PENDINGXFERS, MSG_RESET, en_attente)
+            # PALLIATIF : MSG_RESET au lieu de MSG_ENDXFER pour la dernière image voulue.
+            # Le pilote Brother ignore CAP_XFERCOUNT et, dans MSG_ENDXFER, attend une feuille
+            # de plus pendant le délai du réglage 0x925A (30 s par défaut). La spec TWAIN ne
+            # prévoit MSG_RESET qu'en état 6 ; ici on est en état 7 et la source Brother
+            # l'accepte par tolérance. Une autre source pourrait le refuser.
+            rc = s.appel(DG_CONTROL, DAT_PENDINGXFERS, MSG_RESET, en_attente)
+            if rc != TWRC_SUCCESS:
+                print(f"MSG_RESET refusé ({TWRC.get(rc, rc)}), condition {s.statut()}")
             en_attente.Count = 0
         else:
             s.appel(DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER, en_attente)
