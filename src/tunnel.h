@@ -21,4 +21,19 @@
  * octets reçus, -1 sinon (le détail est sur stderr et dans la trace). */
 int tunnel_lire(const uint8_t selecteur[3], uint8_t *donnees, uint32_t lg);
 
+/* Signature (sélecteur ff 02 00) : 0 si le scanner répond « NOVA ». */
+int tunnel_signature(void);
+
+/* Commande SCSI-2 emballée, avec la chorégraphie du pilote Brother (2a, trames
+ * 781 à 934) : sondages, dépôt de lg_depot octets (sélecteur 02 03 00),
+ * sondages, lecture de lg_reponse octets de réponse s'il y en a (k = 0), puis
+ * du statut (k = 1), qui doit être nul. Le dépôt doit être identique, octet
+ * pour octet, à un dépôt observé (liste de tunnel.c). Renvoie 0 ou -1. */
+int tunnel_commande(const uint8_t *depot, uint32_t lg_depot, uint8_t *reponse, uint32_t lg_reponse);
+
+/* Les temps de tunnel_commande, séparément : dépôt seul (sondages compris),
+ * puis lecture du statut (k = 1), qui doit être nul. */
+int tunnel_deposer(const uint8_t *depot, uint32_t lg_depot);
+int tunnel_statut(void);
+
 #endif

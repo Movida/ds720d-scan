@@ -28,7 +28,7 @@ Toutes les commandes de toutes les captures finissent en statut CSW 0.
 | Sélecteur | Sens, taille | Rôle |
 | --- | --- | --- |
 | `ff 02 00` | IN 4 o | rend `4e 4f 56 41`, « NOVA » : signature du contrôleur NovaTek (vérifié, trame 778) |
-| `ff 03 00` à `ff 06 00` | IN 16 o | sondages d'état, intercalés entre tous les échanges. Réponse `10 00 00 00 01 00 00 00 0X 00…` : X vaut 0 pour `ff 03`, 1 pour `ff 04` à `ff 06` (dans 2a, 10 réponses de `ff 04` sur 6 432 ont X = 0). Rôle déduit : drapeaux d'occupation |
+| `ff 03 00` à `ff 06 00` | IN 16 o | sondages d'état, intercalés entre tous les échanges. Réponse `10 00 00 00 01 00 00 00 0X 00…` : X vaut 0 pour `ff 03`, 1 pour `ff 04` à `ff 06` (dans 2a, 10 réponses de `ff 04` sur 6 432 ont X = 0 ; dans notre essai `3d-papier-sans`, 4 réponses de `ff 03` valent 1 et 2 de `ff 05` valent 0). Le pilote Brother n'en tient pas compte dans sa séquence. Rôle déduit : drapeaux d'occupation |
 | `02 03 00` | OUT n o | **dépose une commande SCSI-2 de scanner** (section 3) |
 | `02 01 k` | IN | « en-tête de réponse » : commence toujours par `10 00…`, comme les sondages (déduit : bloc d'état du contrôleur) |
 | `02 02 k` | IN | la réponse elle-même |
@@ -47,10 +47,11 @@ Le troisième octet `k` du sélecteur `02 01 k` et `02 02 k` dit quelle réponse
 
 Exemple de la première commande de 2a, trames 806 à 934 :
 
-1. Dépôt `02 03 00` (CBW 806, données 808).
-2. Sondages `ff 04`, `ff 06`, `ff 04`, `ff 03`, `ff 03`, `ff 05`.
-3. Si la commande rend des données : `02 01 0` (trame 851), un `ff 04`, `02 02 0` (trame 863).
-4. Sondages, puis `02 01 1` (trame 905), un `ff 04`, `02 02 1` (trame 917) : statut.
+1. Sondages `ff 04`, `ff 03`, `ff 03`, `ff 05` (trames 781 à 800), puis le dépôt `02 03 00` (CBW 806, données 808), puis `ff 04`, `ff 06`.
+2. Si la commande rend des données : mêmes sondages, `02 01 0` (trame 851), un `ff 04`, `02 02 0` (trame 863), puis `ff 04`, `ff 06`.
+3. Mêmes sondages, `02 01 1` (trame 905), un `ff 04`, `02 02 1` (trame 917) : statut, puis `ff 04`, `ff 06`.
+
+Cette chorégraphie se répète à l'identique pour chaque commande de 2a ; la signature `ff 02` est relue avant certaines (trames 772, 937, 1096, 1258, 1418). `src/tunnel.c` la reproduit (`tunnel_commande`).
 
 La zone déposée commence par 10 o réservés au CDB emballé (un CDB de 6 o, groupe 0, y est suivi de 4 zéros), puis viennent les données éventuelles. Vérifié : dépôt de 12 o = 10 + 2 pour SEND 0x95 (trame 1755), 89 o = 10 + 0x4F pour SET WINDOW (trame 2067).
 
@@ -62,7 +63,7 @@ Le premier octet de chaque dépôt est un opcode de la table 277 (commandes des 
 
 | Données (trame) | Commande emballée | Lecture |
 | --- | --- | --- |
-| 808, 1130, 1450 | `08 00 00 00 02 00` | opcode absent de la table 277 (READ(6) chez les autres classes) ; rend 2 o, `01 00`. Déduit : « appareil prêt ? » |
+| 808, 1130, 1450 | `08 00 00 00 02 00` | opcode absent de la table 277 (READ(6) chez les autres classes) ; rend 2 o : **présence d'une feuille**, `01 00` avec, `00 00` sans (déduit de 2a, `1e-sans-papier`, `1e-nb-300-recto`, `1e-gris-300-recto-verso` entre deux feuilles, et de notre essai `3d-papier-sans`) |
 | 969, 1291, 1602 | READ type 0xA0 (vendeur), qualificatif 0x0A0D, 2 o | rend `01 00` |
 | 1755 | SEND type 0x95 (vendeur), qualificatif 0x0001, 2 o : `00 00` | effet inconnu |
 | 1859 | SEND type 0x96 (vendeur), qualificatif 0x0001, 2 o : `00 00` | effet inconnu |

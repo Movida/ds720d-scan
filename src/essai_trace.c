@@ -184,6 +184,59 @@ static void rejouer_protocole_vendeur(void)
     rejouer_c5(0x02, 0x02, 0x02, fin_de_page, 24); /* 120206 */
 }
 
+/* Dépôt par le tunnel (étape 3d) : CBW 0xC5 sortant, sélecteur 02 03 00, les
+ * octets déposés, puis le CSW. */
+static void rejouer_depot(const uint8_t *depot, uint32_t lg)
+{
+    static uint32_t tag = 0x3D000000;
+    uint8_t cbw[31] = {
+        0x55, 0x53, 0x42, 0x43,
+        (uint8_t)tag, (uint8_t)(tag >> 8), (uint8_t)(tag >> 16), (uint8_t)(tag >> 24),
+        (uint8_t)lg, (uint8_t)(lg >> 8), (uint8_t)(lg >> 16), (uint8_t)(lg >> 24),
+        0x00, 0x00, 0x10,                               /* OUT, LUN 0, CDB de 16 octets */
+        0xC5, 0x07, 0, 0, 0, 0, (uint8_t)(lg >> 24), (uint8_t)(lg >> 16), (uint8_t)(lg >> 8), (uint8_t)lg,
+        0x02, 0x03, 0x00,
+    };
+    uint8_t csw[13] = {0x55, 0x53, 0x42, 0x53, (uint8_t)tag, (uint8_t)(tag >> 8), (uint8_t)(tag >> 16),
+                       (uint8_t)(tag >> 24)};
+    trace_cbw(cbw);
+    trace_data_out(depot, lg);
+    trace_csw(csw);
+    tag++;
+}
+
+/* Les dix dépôts de 2a, octet pour octet : réglages du pilote TWAIN, sans
+ * donnée d'image ni numéro de série. */
+static void rejouer_depots(void)
+{
+    static const uint8_t papier[10] = {0x08, 0, 0, 0, 0x02};                                     /* 806 */
+    static const uint8_t a0[10] = {0x28, 0, 0xa0, 0, 0x0a, 0x0d, 0, 0, 0x02};                    /* 967 */
+    static const uint8_t send95[12] = {0x2a, 0, 0x95, 0, 0, 0x01, 0, 0, 0x02};                   /* 1753 */
+    static const uint8_t send96[12] = {0x2a, 0, 0x96, 0, 0, 0x01, 0, 0, 0x02};                   /* 1857 */
+    static const uint8_t send83[28] = {0x2a, 0, 0x83, 0, 0, 0, 0, 0, 0x12, 0, 0x04, 0, 0, 0, 0, 0, 0, 0,
+                                       0x04, 0, 0, 0, 0, 0, 0, 0, 0x04, 0};                      /* 1959 */
+    static const uint8_t fenetre[89] = {                                                         /* 2065 */
+        0x24, 0, 0, 0, 0, 0, 0, 0, 0x4f, 0, 0, 0, 0, 0, 0, 0, 0, 0x47, 0, 0, 0x01, 0x2c, 0x01, 0x2c, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0x28, 0x80, 0, 0, 0x41, 0xa0, 0x80, 0x80, 0x80, 0x05, 0x08, 0, 0, 0x03, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0xff, 0x1d, 0xe0, 0xff, 0, 0x1e, 0x60, 0x10, 0x68, 0x10, 0, 0, 0x64, 0, 0x64, 0, 0x64, 0, 0, 0, 0, 0x0b,
+        0x01, 0, 0, 0, 0, 0, 0, 0, 0};
+    static const uint8_t reserve[10] = {0x16};                                                   /* 2177 */
+    static const uint8_t scan[10] = {0x1b, 0, 0, 0, 0, 0x80};                                    /* 2276 */
+    static const uint8_t image[10] = {0x28, 0, 0, 0, 0x0a, 0x0d, 0x1f, 0xea, 0xe0};              /* 2373 */
+    static const uint8_t release[10] = {0x17};                                                   /* 120248 */
+    trace_note("essai : les dix dépôts de 2a");
+    rejouer_depot(papier, sizeof papier);
+    rejouer_depot(a0, sizeof a0);
+    rejouer_depot(send95, sizeof send95);
+    rejouer_depot(send96, sizeof send96);
+    rejouer_depot(send83, sizeof send83);
+    rejouer_depot(fenetre, sizeof fenetre);
+    rejouer_depot(reserve, sizeof reserve);
+    rejouer_depot(scan, sizeof scan);
+    rejouer_depot(image, sizeof image);
+    rejouer_depot(release, sizeof release);
+}
+
 int main(int argc, char **argv)
 {
     SetConsoleOutputCP(CP_UTF8); /* la trace est en UTF-8 (accents, « … ») */
@@ -200,6 +253,7 @@ int main(int argc, char **argv)
     rejouer_inquiry(0xA41D25B0); /* trames 19225 à 19230 */
     rejouer_inquiry(0x961C5290); /* trames 19231 à 19236 */
     rejouer_protocole_vendeur();
+    rejouer_depots();
     trace_fermer();
     return 0;
 }

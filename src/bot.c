@@ -6,9 +6,8 @@
  * de Windows le cacherait). Les 31 octets du CBW sont posés un par un, dans
  * l'ordre de BOT §5.1, table 5.1.
  *
- * Seules les commandes entrantes existent pour l'instant (INQUIRY, lectures du
- * tunnel 0xC5) : on n'ajoute le sens sortant que quand une commande observée en
- * aura besoin.
+ * Les deux sens existent : entrant (INQUIRY, lectures du tunnel 0xC5) et, depuis
+ * l'étape 3d, sortant (dépôt d'une commande dans le tunnel).
  *
  * Reprise sur erreur (étape 3c), selon BOT §5.3 et §6.7 :
  *   - STALL pendant les données : on débloque l'endpoint IN et on lit le CSW
@@ -130,7 +129,9 @@ static long lire_csw(uint8_t csw[LG_CSW])
     return n;
 }
 
-int bot_commande_in(uint8_t lun, const uint8_t *cdb, uint8_t lg_cdb,
+/* Une commande dans un sens ou dans l'autre : les deux ne diffèrent que par le
+ * bit 7 de bmCBWFlags et l'endpoint de la phase de données (BOT §5.1, §6.7). */
+static int commande(uint8_t lun, const uint8_t *cdb, uint8_t lg_cdb, int sortant,
                     uint8_t *donnees, uint32_t lg, struct bot_resultat *r)
 {
     uint8_t cbw[LG_CBW] = {0}, csw[LG_CSW];
@@ -148,7 +149,7 @@ int bot_commande_in(uint8_t lun, const uint8_t *cdb, uint8_t lg_cdb,
     pose_le32(cbw + 0, SIGNATURE_CBW); /* dCBWSignature */
     pose_le32(cbw + 4, tag);           /* dCBWTag */
     pose_le32(cbw + 8, lg);            /* dCBWDataTransferLength : octets attendus */
-    cbw[12] = 0x80;                    /* bmCBWFlags : bit 7 à 1, données vers l'hôte */
+    cbw[12] = sortant ? 0x00 : 0x80;   /* bmCBWFlags : bit 7 à 1, données vers l'hôte */
     cbw[13] = lun;                     /* bCBWLUN (bits 3..0) */
     cbw[14] = lg_cdb;                  /* bCBWCBLength (bits 4..0) */
     memcpy(cbw + 15, cdb, lg_cdb);     /* CBWCB, complété de zéros jusqu'à 16 octets */
@@ -162,22 +163,32 @@ int bot_commande_in(uint8_t lun, const uint8_t *cdb, uint8_t lg_cdb,
         return -1;
     }
 
-    /* 2. Données. Un STALL ici est légal (BOT §6.7.2 : l'appareil a moins à
-     * envoyer que demandé, ou refuse la commande) : on débloque l'endpoint et on
-     * passe au CSW, qui dira le statut et le résidu. Tout autre échec (délai
-     * dépassé, câble) laisse le transport dans un état inconnu : Reset Recovery. */
+    /* 2. Données. Un STALL ici est légal (BOT §6.7.2 en entrée : l'appareil a
+     * moins à envoyer que demandé ; §6.7.3 en sortie : il refuse la suite) : on
+     * débloque l'endpoint concerné et on passe au CSW, qui dira le statut et le
+     * résidu. Tout autre échec (délai dépassé, câble) laisse le transport dans un
+     * état inconnu : Reset Recovery. Les données sortantes sont tracées au
+     * départ, les entrantes à l'arrivée, comme les voit USBPcap. */
     r->recus = 0;
     if (lg) {
         unsigned long erreur = 0;
-        n = periph_bulk_lire(ep_in, donnees, lg, &erreur);
-        if (n < 0 && !(est_stall(erreur) && periph_debloquer(ep_in) == 0)) {
-            fprintf(stderr, "lecture des données impossible (Win32=%lu), arrêt\n", erreur);
+        uint8_t ep = sortant ? ep_out : ep_in;
+        if (sortant) {
+            trace_data_out(donnees, lg);
+            n = periph_bulk_ecrire(ep, donnees, lg, &erreur);
+        } else {
+            n = periph_bulk_lire(ep, donnees, lg, &erreur);
+        }
+        if (n < 0 && !(est_stall(erreur) && periph_debloquer(ep) == 0)) {
+            fprintf(stderr, "%s des données impossible (Win32=%lu), arrêt\n", sortant ? "envoi" : "lecture",
+                    erreur);
             bot_reprise();
             return -1;
         }
         if (n > 0) {
             r->recus = (size_t)n;
-            trace_data_in(donnees, r->recus);
+            if (!sortant)
+                trace_data_in(donnees, r->recus);
         }
     }
 
@@ -220,4 +231,18 @@ int bot_commande_in(uint8_t lun, const uint8_t *cdb, uint8_t lg_cdb,
         return -1;
     }
     return 0;
+}
+
+int bot_commande_in(uint8_t lun, const uint8_t *cdb, uint8_t lg_cdb,
+                    uint8_t *donnees, uint32_t lg, struct bot_resultat *r)
+{
+    return commande(lun, cdb, lg_cdb, 0, donnees, lg, r);
+}
+
+int bot_commande_out(uint8_t lun, const uint8_t *cdb, uint8_t lg_cdb,
+                     const uint8_t *donnees, uint32_t lg, struct bot_resultat *r)
+{
+    /* commande() ne modifie pas un tampon sortant : il ne fait que le lire pour
+     * la trace et pour WinUsb_WritePipe. */
+    return commande(lun, cdb, lg_cdb, 1, (uint8_t *)donnees, lg, r);
 }

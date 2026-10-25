@@ -6,10 +6,13 @@
  *   ds720d lun [--trace FICHIER]
  *   ds720d inquiry [--trace FICHIER]
  *   ds720d etat [--trace FICHIER]
+ *   ds720d papier [--trace FICHIER]
  *
  * Chaque commande refait les précédentes, dans l'ordre où Windows énumère le
  * scanner (1b) : descripteurs, GET_MAX_LUN, puis INQUIRY ; « etat » y ajoute la
- * prise de contact du logiciel Brother par le tunnel 0xC5, en lecture seule.
+ * prise de contact du logiciel Brother par le tunnel 0xC5, en lecture seule ;
+ * « papier » y ajoute les questions que pose le pilote TWAIN avant un scan
+ * (présence du papier), par des commandes de lecture déposées dans le tunnel.
  * Pourquoi enchaîner plutôt qu'isoler chaque requête : GET_MAX_LUN a besoin du
  * numéro d'interface lu dans les descripteurs, et la trace se compare alors d'un
  * bloc à la référence.
@@ -261,9 +264,46 @@ static int lire_etat(void)
     return 0;
 }
 
+/* Dépôts de la capture 2a, à l'octet près (tunnel.c les compare à sa liste). */
+static const uint8_t depot_papier[10] = {0x08, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00};
+static const uint8_t depot_a0[10] = {0x28, 0x00, 0xa0, 0x00, 0x0a, 0x0d, 0x00, 0x00, 0x02, 0x00};
+
+/* Ce que le pilote TWAIN demande avant de régler un scan (2a, trames 772 à
+ * 1752) : trois fois de suite, l'opcode 0x08 (réponse 01 00 avec une feuille,
+ * 00 00 sans ; déduit de 2a, 1e-sans-papier et 1e-nb-300-recto) puis READ type
+ * 0xA0 (2 octets, 01 00 dans toutes les captures, sens inconnu). La signature
+ * est relue avant chacune des cinq premières commandes, pas avant la sixième :
+ * on le reproduit tel quel (trames 772, 937, 1096, 1258, 1418).
+ *
+ * Sans feuille, le pilote TWAIN attend qu'on en glisse une (1e-sans-papier) ;
+ * nous, on s'arrête après la première réponse 00 00 et on le dit : attendre en
+ * sondant le scanner serait une séquence qu'aucune capture ne montre.
+ * Renvoie 1 si une feuille est engagée, 0 sinon, -1 en cas d'erreur. */
+static int lire_papier(void)
+{
+    uint8_t d[2];
+    for (int i = 0; i < 6; i++) {
+        if (i < 5 && tunnel_signature() != 0)
+            return -1;
+        int papier = i % 2 == 0;
+        if (tunnel_commande(papier ? depot_papier : depot_a0, 10, d, sizeof d) != 0)
+            return -1;
+        if (papier && d[0] == 0x00 && d[1] == 0x00) {
+            trace_note("pas de feuille dans le chargeur (0x08 rend 00 00)");
+            return 0;
+        }
+        if (d[0] != 0x01 || d[1] != 0x00) {
+            fprintf(stderr, "%s : réponse %02x %02x jamais observée\n", papier ? "0x08" : "READ 0xA0", d[0], d[1]);
+            return -1;
+        }
+    }
+    trace_note("feuille engagée (0x08 rend 01 00, READ 0xA0 rend 01 00)");
+    return 1;
+}
+
 static void usage(void)
 {
-    fprintf(stderr, "usage : ds720d descripteurs|lun|inquiry|etat [--trace FICHIER]\n");
+    fprintf(stderr, "usage : ds720d descripteurs|lun|inquiry|etat|papier [--trace FICHIER]\n");
 }
 
 int main(int argc, char **argv)
@@ -282,7 +322,7 @@ int main(int argc, char **argv)
         }
     }
     /* Niveau atteint par la commande : 1 descripteurs, 2 GET_MAX_LUN, 3 INQUIRY,
-     * 4 prise de contact par 0xC5. */
+     * 4 prise de contact par 0xC5, 5 présence du papier. */
     int niveau = 0;
     if (commande && strcmp(commande, "descripteurs") == 0)
         niveau = 1;
@@ -292,6 +332,8 @@ int main(int argc, char **argv)
         niveau = 3;
     else if (commande && strcmp(commande, "etat") == 0)
         niveau = 4;
+    else if (commande && strcmp(commande, "papier") == 0)
+        niveau = 5;
     if (!niveau) {
         usage();
         return 2;
@@ -314,6 +356,12 @@ int main(int argc, char **argv)
     }
     if (r == 0 && niveau >= 4)
         r = lire_etat();
+    if (r == 0 && niveau >= 5) {
+        int papier = lire_papier();
+        if (papier >= 0)
+            printf("%s\n", papier ? "feuille engagée" : "pas de feuille");
+        r = papier < 0 ? -1 : 0;
+    }
     periph_fermer();
     trace_fermer();
     return r == 0 ? 0 : 1;

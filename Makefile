@@ -17,14 +17,14 @@ LDFLAGS = /nologo /DEBUG
 
 all: out\essai_trace.exe out\essai_bot.exe out\ds720d.exe out\bascule_winusb.exe
 
-# Essai de bot.c contre un faux périphérique (bouchons dans essai_bot.c) :
+# Essai de bot.c et tunnel.c contre un faux périphérique (bouchons dans essai_bot.c) :
 # ni peripherique.obj ni winusb.lib, rien ne peut partir vers le scanner.
-out\essai_bot.obj: src\essai_bot.c src\bot.h src\peripherique.h src\trace.h
+out\essai_bot.obj: src\essai_bot.c src\bot.h src\peripherique.h src\trace.h src\tunnel.h
 	@if not exist out mkdir out
 	cl $(CFLAGS) /c /Fo$@ src\essai_bot.c
 
-out\essai_bot.exe: out\essai_bot.obj out\bot.obj out\trace.obj
-	link $(LDFLAGS) /OUT:$@ out\essai_bot.obj out\bot.obj out\trace.obj
+out\essai_bot.exe: out\essai_bot.obj out\bot.obj out\tunnel.obj out\trace.obj
+	link $(LDFLAGS) /OUT:$@ out\essai_bot.obj out\bot.obj out\tunnel.obj out\trace.obj
 
 out\bascule_winusb.obj: src\bascule_winusb.c
 	@if not exist out mkdir out

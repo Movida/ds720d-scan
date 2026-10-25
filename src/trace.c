@@ -465,6 +465,133 @@ static void decrire_reponse_vendeur(const uint8_t *d, size_t lg)
     }
 }
 
+/* Vrai si le CBW en cours est un dépôt de commande par le tunnel (02 03 00). */
+static int depot_en_cours(void)
+{
+    return cbw_en_cours && cbw_lg_cdb == 16 && cbw_cdb[0] == 0xC5 && cbw_cdb[10] == 0x02 &&
+           cbw_cdb[11] == 0x03 && cbw_cdb[12] == 0x00;
+}
+
+/* Paramètres de SET WINDOW (SCSI-2 §15.2.7) : en-tête de 8 octets (longueur du
+ * descripteur en octets 6-7), puis descripteur de fenêtre (table 282). */
+static void decrire_fenetre(const uint8_t *p, size_t lg)
+{
+    static const char *compositions[] = {"noir et blanc 1 bit", "noir et blanc tramé", "gris multiniveau",
+                                         "RVB 1 bit", "RVB tramé", "RVB multiniveau"};      /* table 283 */
+    static const char *bourrages[] = {"aucun", "zéros jusqu'à l'octet", "uns jusqu'à l'octet",
+                                      "tronqué à l'octet"};                                 /* table 284 */
+    char buf[LG_LIGNE], hx[LG_LIGNE];
+    if (lg < 8) {
+        snprintf(buf, sizeof buf, "!! paramètres de SET WINDOW trop courts (%zu o)", lg);
+        suite(buf);
+        return;
+    }
+    size_t lg_desc = (size_t)(p[6] << 8 | p[7]);
+    size_t lg_d = lg - 8 < lg_desc ? lg - 8 : lg_desc;
+    const uint8_t *d = p + 8;
+    if (lg_d < 40 || lg_d != lg_desc) {
+        snprintf(buf, sizeof buf, "!! descripteur de fenêtre de %zu o (annoncé %zu)", lg_d, lg_desc);
+        suite(buf);
+        return;
+    }
+    uint32_t largeur = be32(d + 14), longueur = be32(d + 18);
+    /* Unité des coordonnées : 1/1200 de pouce par défaut (SCSI-2 §15.3.3.1). */
+    snprintf(buf, sizeof buf,
+             "fenêtre %u, auto=%u : %u × %u ppp, origine (%u, %u), %u × %u unités (%.3f × %.3f po à 1/1200 po)",
+             d[0], d[1] & 1u, (unsigned)(d[2] << 8 | d[3]), (unsigned)(d[4] << 8 | d[5]), be32(d + 6),
+             be32(d + 10), largeur, longueur, largeur / 1200.0, longueur / 1200.0);
+    suite(buf);
+    snprintf(buf, sizeof buf, "luminosité 0x%02X, seuil 0x%02X, contraste 0x%02X, composition %02X (%s), "
+             "%u bits par pixel", d[22], d[23], d[24], d[25], d[25] < 6 ? compositions[d[25]] : "réservé", d[26]);
+    suite(buf);
+    snprintf(buf, sizeof buf, "demi-teinte 0x%04X, RIF %u, bourrage %u (%s), ordre des bits 0x%04X, "
+             "compression %02X/%02X", (unsigned)(d[27] << 8 | d[28]), d[29] >> 7, d[29] & 7u,
+             (d[29] & 7) < 4 ? bourrages[d[29] & 7] : "réservé", (unsigned)(d[30] << 8 | d[31]), d[32], d[33]);
+    suite(buf);
+    hexa(hx, sizeof hx, d + 40, lg_d - 40, -1);
+    snprintf(buf, sizeof buf, "octets vendeur (%zu) : %s", lg_d - 40, hx);
+    suite(buf);
+}
+
+/* Lignes de détail sous le DATA-OUT d'un dépôt : la commande SCSI-2 emballée,
+ * puis ses paramètres quand on sait les lire (docs/protocole.md §3). */
+static void decrire_depot(const uint8_t *depot, size_t lg)
+{
+    /* Commandes de la table 277 de SCSI-2 (§15.2) ; 0x2A y est SEND, pas WRITE(10). */
+    static const struct { uint8_t op; const char *nom, *section; } scanner[] = {
+        {0x00, "TEST UNIT READY", "§8.2.16"}, {0x03, "REQUEST SENSE", "§8.2.14"}, {0x12, "INQUIRY", "§8.2.5"},
+        {0x16, "RESERVE UNIT", "§10.2.10"},  {0x17, "RELEASE UNIT", "§10.2.9"},  {0x1B, "SCAN", "§15.2.5"},
+        {0x24, "SET WINDOW", "§15.2.7"},     {0x25, "GET WINDOW", "§15.2.2"},    {0x28, "READ", "§15.2.4"},
+        {0x2A, "SEND", "§15.2.6"},           {0x31, "OBJECT POSITION", "§15.2.3"},
+        {0x34, "GET DATA BUFFER STATUS", "§15.2.1"},
+    };
+    static const struct { uint8_t op; const char *nom; } dangereux[] = {
+        {0x04, "FORMAT UNIT"}, {0x0A, "WRITE(6)"}, {0x2E, "WRITE AND VERIFY(10)"},
+        {0x3B, "WRITE BUFFER"}, {0x8A, "WRITE(16)"}, {0xAA, "WRITE(12)"},
+    };
+    char buf[LG_LIGNE], nom[96], hx[LG_LIGNE];
+    if (lg < 10) {
+        snprintf(buf, sizeof buf, "!! dépôt de %zu o (attendu au moins 10)", lg);
+        suite(buf);
+        return;
+    }
+    uint8_t op = depot[0];
+    size_t lg_cdb = op < 0x20 ? 6 : 10; /* groupe 0 : 6 o, groupe 1 : 10 o (SCSI-2 §7.2.1) */
+    const uint8_t *donnees = depot + 10;
+    size_t lg_donnees = lg - 10;
+
+    snprintf(nom, sizeof nom, "opcode 0x%02X (absent de la table 277 des scanners)", op);
+    for (size_t k = 0; k < sizeof scanner / sizeof scanner[0]; k++)
+        if (scanner[k].op == op)
+            snprintf(nom, sizeof nom, "%s (SCSI-2 %s)", scanner[k].nom, scanner[k].section);
+    for (size_t k = 0; k < sizeof dangereux / sizeof dangereux[0]; k++)
+        if (dangereux[k].op == op)
+            snprintf(nom, sizeof nom, "%s !! ÉCRITURE", dangereux[k].nom);
+    hexa(hx, sizeof hx, depot, lg_cdb, -1);
+    size_t pos = (size_t)snprintf(buf, sizeof buf, "commande emballée : %s, CDB[%zu]=%s", nom, lg_cdb, hx);
+    for (size_t k = lg_cdb; k < 10; k++)
+        if (depot[k]) {
+            pos += (size_t)snprintf(buf + pos, sizeof buf - pos, "  !! zone de CDB non nulle après le CDB");
+            break;
+        }
+
+    int serie = 0;
+    if (op == 0x28 || op == 0x2A) {
+        /* READ et SEND, tables 288 et 291 : type octet 2, qualificatif 4-5, longueur 6-8. */
+        uint8_t type = depot[2];
+        uint32_t n = (uint32_t)depot[6] << 16 | (uint32_t)depot[7] << 8 | depot[8];
+        const char *t = type == 0 ? "image" : type == 1 ? "vendeur" : type == 2 ? "masque de demi-teinte"
+                      : type == 3 ? "fonction gamma" : type >= 0x80 ? "vendeur" : "réservé"; /* table 289 */
+        pos += (size_t)snprintf(buf + pos, sizeof buf - pos, ", type 0x%02X (%s), qualificatif 0x%04X, %u o", type,
+                                t, (unsigned)(depot[4] << 8 | depot[5]), n);
+        if (op == 0x2A && n != lg_donnees)
+            snprintf(buf + pos, sizeof buf - pos, "  !! %zu o de données déposés", lg_donnees);
+        serie = op == 0x2A && type == 0x85; /* date et numéro de série (Capture Tool) */
+    } else if (op == 0x24) {
+        uint32_t n = (uint32_t)depot[6] << 16 | (uint32_t)depot[7] << 8 | depot[8]; /* table 292 */
+        pos += (size_t)snprintf(buf + pos, sizeof buf - pos, ", %u o de paramètres", n);
+        if (n != lg_donnees)
+            snprintf(buf + pos, sizeof buf - pos, "  !! %zu o déposés", lg_donnees);
+    } else if (op == 0x1B) {
+        /* SCAN, table 290 : octet 4 = longueur de la liste de fenêtres ; octet de
+         * contrôle : bits 7-6 réservés au fabricant (SCSI-2 §7.2.7). */
+        snprintf(buf + pos, sizeof buf - pos, ", liste de fenêtres de %u o, contrôle 0x%02X", depot[4], depot[5]);
+    } else if (op < 0x20) {
+        snprintf(buf + pos, sizeof buf - pos, ", octet 4 = %u", depot[4]);
+    }
+    suite(buf);
+
+    if (op == 0x24) {
+        decrire_fenetre(donnees, lg_donnees);
+    } else if (serie) {
+        suite("données : (numéro de série masqué)");
+    } else if (op == 0x2A || lg_donnees) {
+        hexa(hx, sizeof hx, donnees, lg_donnees, -1);
+        snprintf(buf, sizeof buf, "données : %s", hx);
+        suite(buf);
+    }
+}
+
 /* ------------------------------------------------------------------------- */
 /* Interface publique                                                        */
 /* ------------------------------------------------------------------------- */
@@ -608,9 +735,20 @@ void trace_data_in(const uint8_t *donnees, size_t lg)
 void trace_data_out(const uint8_t *donnees, size_t lg)
 {
     char hx[LG_LIGNE], buf[LG_LIGNE];
-    hexa(hx, sizeof hx, donnees, lg, OCTETS_MAX);
-    snprintf(buf, sizeof buf, "%zu o  %s", lg, hx);
-    ligne("DATA-OUT", buf);
+    int depot = depot_en_cours();
+    if (depot && lg > 10 && donnees[0] == 0x2A && donnees[2] == 0x85) {
+        /* SEND 0x85 : Capture Tool y met le numéro de série (CLAUDE.md). Notre
+         * code ne l'envoie pas (tunnel.c le refuserait), mais la trace le masque. */
+        hexa(hx, sizeof hx, donnees, 10, -1);
+        snprintf(buf, sizeof buf, "%zu o  %s + %zu o (numéro de série masqué)", lg, hx, lg - 10);
+        ligne("DATA-OUT", buf);
+    } else {
+        hexa(hx, sizeof hx, donnees, lg, OCTETS_MAX);
+        snprintf(buf, sizeof buf, "%zu o  %s", lg, hx);
+        ligne("DATA-OUT", buf);
+    }
+    if (depot)
+        decrire_depot(donnees, lg);
 }
 
 void trace_csw(const uint8_t csw[13])

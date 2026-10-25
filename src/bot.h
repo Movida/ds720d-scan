@@ -35,4 +35,9 @@ struct bot_resultat {
 int bot_commande_in(uint8_t lun, const uint8_t *cdb, uint8_t lg_cdb,
                     uint8_t *donnees, uint32_t lg, struct bot_resultat *r);
 
+/* Commande sortante (données de l'hôte vers l'appareil) de lg octets. Mêmes
+ * retours ; r->recus y compte les octets effectivement envoyés. */
+int bot_commande_out(uint8_t lun, const uint8_t *cdb, uint8_t lg_cdb,
+                     const uint8_t *donnees, uint32_t lg, struct bot_resultat *r);
+
 #endif
