@@ -39,7 +39,7 @@ Pourquoi pas sur Medabot : il faudrait couper Secure Boot et HVCI sur le PC prin
 | Hyper-V + USB/IP (usbipd-win, usbip-win2) | Derrière un contrôleur virtuel logiciel, lui-même pilote noyau tiers signé en test | Natif | Écarté : une couche noyau tierce entre notre code et les URB |
 | VirtualBox | Oui | Mode dégradé « NEM », Windows 11 invité lent et instable | Écarté |
 
-À vérifier en 5d (déduit de la doc VMware, pas encore observé) : le passage USB fonctionne au-dessus de l'hyperviseur Windows.
+Vérifié en 5d : le passage USB fonctionne au-dessus de l'hyperviseur Windows (VMware en mode « ULM », sur Windows Hypervisor Platform).
 
 ### Débogage noyau : KDNET, série en secours
 
@@ -69,7 +69,7 @@ Au premier branchement, le Windows invité lierait le scanner à USBSTOR et mont
 | 5a | Ce document, passation et historique | Claude | Non |
 | 5b | Point de restauration de Medabot, sauvegarde Kopia récente vérifiée ; installation de VMware Workstation Pro, WinDbg, WDK 10.0.26100 et Debugging Tools for Windows (pour `kdnet.exe`) ; inventaire relu | David, Claude vérifie | **Oui** (binaires tiers) |
 | 5c | VM créée par commandes (`banc/vm/`), Windows installé sans clic, VMware Tools, instantané `windows-propre` | Claude, David pour la console de la VM | **Oui** (Secure Boot de la VM, Tools) |
-| 5d | Montage automatique coupé, scanner passé à la VM, `bascule_winusb.exe`, puis `ds720d descripteurs`, `inquiry`, `etat` dans la VM ; trace comparée à la référence ; essai d'USBPcap côté hôte | Claude, David pour l'admin dans la VM | Non (commandes déjà autorisées) |
+| 5d | Montage automatique coupé, scanner passé à la VM, `bascule_winusb.exe`, puis `ds720d descripteurs`, `inquiry`, `etat` dans la VM ; traces comparées à Medabot et à une capture USBPcap faite sur Medabot | Claude, David pour l'admin dans la VM | Non (commandes déjà autorisées) |
 | 5e | `bcdedit /debug on` et `/dbgsettings net` dans la VM, règle de pare-feu sur Medabot, WinDbg attaché, arrêt et reprise, instantané `debug-pret` | David, Claude guide et vérifie | **Oui** (bcdedit de la VM, pare-feu de Medabot) |
 | 5f | Test-signing dans la VM, certificat de test, pilote minimal fait main (`DriverEntry`, un `DbgPrint`, déchargement ; aucun matériel) construit par nmake, signé, chargé dans la VM, message lu dans WinDbg | Claude écrit, David charge | **Oui** (bcdedit de la VM, premier chargement) |
 | 5g | Relecture de fond, CLAUDE.md, HISTORIQUE.md, tag `etape-5` | Claude | Non |
@@ -104,6 +104,19 @@ Pièges rencontrés :
 - `vmcli MKS sendKeyEvent` n'atteint pas le gestionnaire de démarrage du firmware : il faut la console de VMware.
 - `vmrun runProgramInGuest` recolle les arguments en une ligne : un `-Command` PowerShell avec guillemets et accolades n'y survit pas, d'où le passage par un fichier `.ps1` copié dans l'invité.
 - Une fenêtre de VMware propose de connecter à la VM chaque nouveau périphérique USB : toujours répondre « hôte » tant que la 5d n'a pas coupé le montage automatique dans l'invité.
+
+## Le scanner dans la VM (5d, 25/10)
+
+1. Montage automatique coupé dans l'invité (`mountvol /N`, en admin par David), vérifié : `NoAutoMount=1`.
+2. Capture USBPcap lancée sur Medabot (`5d-vm`), puis scanner passé à la VM (VM > Périphériques amovibles > Brother DS-720D > Connecter).
+3. Windows invité le lie d'abord à USBSTOR et le sonde : TEST UNIT READY, READ CAPACITY, MODE SENSE, READ(10) de 303 104 o au total. **Aucune écriture**, aucune lettre de lecteur. `bascule_winusb.exe --oui` (en admin dans la VM) le passe ensuite sous WinUSB, comme à l'étape 2 sur Medabot.
+4. `ds720d descripteurs`, `inquiry` et `etat` lancés dans la VM par `invite.ps1` (le programme tourne sans élévation, comme sur Medabot) : tous réussis.
+
+Contrôle croisé : concordance parfaite entre nos traces de la VM et la capture faite sur Medabot (18, 25 et 105 lignes), et entre nos traces de la VM et celles de Medabot aux étapes 2 et 3. Le passage par VMware est transparent pour le protocole.
+
+Constat utile pour l'étape 6 : **USBPcap sur Medabot voit le trafic que la VM échange avec le scanner**, avec les mêmes adresses d'endpoints et les mêmes CBW. Le pilote noyau dans la VM pourra donc être contrôlé de l'extérieur, par le même banc qu'aux étapes 2 à 4, en plus de ses traces WPP.
+
+Le scanner reste attaché à la VM jusqu'à ce qu'on le rende à Medabot (même menu, Déconnecter) ; il y retrouve WinUSB.
 
 ## Retour arrière
 

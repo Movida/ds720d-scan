@@ -4,6 +4,8 @@
 #   .\banc\vm\invite.ps1 lancer   <programme> [arguments]    # attend la fin
 #   .\banc\vm\invite.ps1 vers     <fichier hôte> <fichier invité>
 #   .\banc\vm\invite.ps1 depuis   <fichier invité> <fichier hôte>
+#   .\banc\vm\invite.ps1 dossier  <dossier invité>          # le crée s'il manque
+#   .\banc\vm\invite.ps1 ps       "<commandes PowerShell>"  # sortie affichée
 #   .\banc\vm\invite.ps1 etat                               # état de la VM en lecture seule
 #
 # Le mot de passe du compte « david » de la VM n'est écrit nulle part : David
@@ -17,7 +19,7 @@
 # jetable sur un PC à un seul utilisateur.
 
 param(
-    [Parameter(Mandatory = $true, Position = 0)][ValidateSet('lancer', 'vers', 'depuis', 'etat')][string]$Action,
+    [Parameter(Mandatory = $true, Position = 0)][ValidateSet('lancer', 'vers', 'depuis', 'dossier', 'ps', 'etat')][string]$Action,
     [Parameter(ValueFromRemainingArguments = $true)][string[]]$Reste
 )
 
@@ -58,6 +60,26 @@ function Vmrun-Invite([string[]]$arguments) {
     if ($LASTEXITCODE -ne 0) { throw "vmrun $($arguments[0]) a échoué ($LASTEXITCODE)" }
 }
 
+function PowerShell-Invite([string]$commandes) {
+    # Le script passe par un fichier : vmrun recolle les arguments en une
+    # seule ligne de commande, et les guillemets, accolades et redirections
+    # d'un -Command ou d'un cmd /c ne survivent pas à ce recollage.
+    # Il tourne avec le jeton filtré de « david » (pas d'élévation : ce qui
+    # demande les droits admin dans la VM, c'est David qui le lance).
+    $scriptHote = Join-Path $env:TEMP 'ds720d-invite.ps1'
+    $scriptInvite = 'C:\Users\Public\ds720d-invite.ps1'
+    $sortieInvite = 'C:\Users\Public\ds720d-invite.txt'
+    # « exit 0 » : le code de sortie de la dernière commande (bcdedit sans
+    # élévation par exemple) ne dit rien de ce qui a été relevé.
+    [IO.File]::WriteAllText($scriptHote, "& { $commandes } *> $sortieInvite; exit 0", (New-Object Text.UTF8Encoding($true)))
+    Vmrun-Invite @('copyFileFromHostToGuest', $vmx, $scriptHote, $scriptInvite)
+    Vmrun-Invite @('runProgramInGuest', $vmx, 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe',
+                   '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptInvite)
+    $local = Join-Path $env:TEMP 'ds720d-invite.txt'
+    Vmrun-Invite @('copyFileFromGuestToHost', $vmx, $sortieInvite, $local)
+    Get-Content -LiteralPath $local -Encoding Unicode
+}
+
 switch ($Action) {
     'lancer' {
         if ($Reste.Count -lt 1) { throw 'lancer <programme> [arguments]' }
@@ -71,33 +93,29 @@ switch ($Action) {
         if ($Reste.Count -ne 2) { throw 'depuis <fichier invité> <fichier hôte>' }
         Vmrun-Invite @('copyFileFromGuestToHost', $vmx, $Reste[0], $Reste[1])
     }
+    'dossier' {
+        if ($Reste.Count -ne 1) { throw 'dossier <dossier invité>' }
+        $id = Lire-Identifiant
+        $existe = & $vmrun -T ws -gu $id.Utilisateur -gp $id.MotDePasse directoryExistsInGuest $vmx $Reste[0]
+        if ($existe -notmatch 'exists') { Vmrun-Invite @('createDirectoryInGuest', $vmx, $Reste[0]) }
+    }
+    'ps' {
+        # Un bloc PowerShell exécuté dans la VM, sortie rapatriée et affichée.
+        if ($Reste.Count -ne 1) { throw 'ps "<commandes PowerShell>"' }
+        PowerShell-Invite $Reste[0]
+    }
     'etat' {
         # Lecture seule : version, édition, Secure Boot, VBS/HVCI, réseau,
         # contrôleurs USB, entrée de démarrage, volumes. Rien n'est modifié.
-        $sortieInvite = 'C:\Users\Public\ds720d-etat.txt'
-        $ps = 'Get-ComputerInfo -Property OsName,OsVersion,OsBuildNumber,WindowsEditionId | Format-List; ' +
-              'try { "SecureBoot=" + (Confirm-SecureBootUEFI) } catch { "SecureBoot=" + $_.Exception.Message }; ' +
-              '$dg = Get-CimInstance -Namespace root\Microsoft\Windows\DeviceGuard -ClassName Win32_DeviceGuard; ' +
-              '"VBS=" + $dg.VirtualizationBasedSecurityStatus + " services=" + ($dg.SecurityServicesRunning -join ","); ' +
-              '"HVCI(registre)=" + (Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity -ErrorAction SilentlyContinue).Enabled; ' +
-              'Get-NetAdapter | Format-Table -AutoSize Name,InterfaceDescription,Status,MacAddress; ' +
-              'Get-NetIPAddress -AddressFamily IPv4 | Format-Table -AutoSize InterfaceAlias,IPAddress,PrefixLength; ' +
-              'Get-PnpDevice -PresentOnly | Where-Object { $_.Class -eq ''USB'' } | Format-Table -AutoSize FriendlyName,Status; ' +
-              'bcdedit /enum ''{current}''; mountvol; ' +
-              # bcdedit sans élévation finit en « accès refusé » : le code de
-              # sortie de la dernière commande ne dit rien de l'état relevé.
-              'exit 0'
-        # Le script passe par un fichier : vmrun recolle les arguments en une
-        # seule ligne de commande, et les guillemets et accolades d'un
-        # -Command ne survivent pas à ce recollage.
-        $scriptHote = Join-Path $env:TEMP 'ds720d-etat-vm.ps1'
-        $scriptInvite = 'C:\Users\Public\ds720d-etat.ps1'
-        [IO.File]::WriteAllText($scriptHote, "& { $ps } *> $sortieInvite", (New-Object Text.UTF8Encoding($true)))
-        Vmrun-Invite @('copyFileFromHostToGuest', $vmx, $scriptHote, $scriptInvite)
-        Vmrun-Invite @('runProgramInGuest', $vmx, 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe',
-                       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptInvite)
-        $local = Join-Path $env:TEMP 'ds720d-etat-vm.txt'
-        Vmrun-Invite @('copyFileFromGuestToHost', $vmx, $sortieInvite, $local)
-        Get-Content -LiteralPath $local -Encoding Unicode
+        PowerShell-Invite ('Get-ComputerInfo -Property OsName,OsVersion,OsBuildNumber,WindowsEditionId | Format-List; ' +
+            'try { "SecureBoot=" + (Confirm-SecureBootUEFI) } catch { "SecureBoot=" + $_.Exception.Message }; ' +
+            '$dg = Get-CimInstance -Namespace root\Microsoft\Windows\DeviceGuard -ClassName Win32_DeviceGuard; ' +
+            '"VBS=" + $dg.VirtualizationBasedSecurityStatus + " services=" + ($dg.SecurityServicesRunning -join ","); ' +
+            '"HVCI(registre)=" + (Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity -ErrorAction SilentlyContinue).Enabled; ' +
+            '"NoAutoMount=" + (Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Services\mountmgr -ErrorAction SilentlyContinue).NoAutoMount; ' +
+            'Get-NetAdapter | Format-Table -AutoSize Name,InterfaceDescription,Status,MacAddress; ' +
+            'Get-NetIPAddress -AddressFamily IPv4 | Format-Table -AutoSize InterfaceAlias,IPAddress,PrefixLength; ' +
+            'Get-PnpDevice -PresentOnly | Where-Object { $_.Class -eq ''USB'' } | Format-Table -AutoSize FriendlyName,Status; ' +
+            'bcdedit /enum ''{current}''; mountvol')
     }
 }
