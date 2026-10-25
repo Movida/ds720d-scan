@@ -41,7 +41,7 @@ DAT_CAPABILITY, DAT_EVENT, DAT_IDENTITY, DAT_PARENT = 0x0001, 0x0002, 0x0003, 0x
 DAT_PENDINGXFERS, DAT_STATUS, DAT_USERINTERFACE = 0x0005, 0x0008, 0x0009
 DAT_SETUPFILEXFER, DAT_IMAGEINFO, DAT_IMAGEFILEXFER = 0x0007, 0x0101, 0x0105
 
-MSG_GET, MSG_GETCURRENT, MSG_SET = 0x0001, 0x0002, 0x0006
+MSG_GET, MSG_GETCURRENT, MSG_SET, MSG_RESET = 0x0001, 0x0002, 0x0006, 0x0007
 MSG_GETFIRST, MSG_GETNEXT = 0x0004, 0x0005
 MSG_XFERREADY, MSG_CLOSEDSREQ, MSG_CLOSEDSOK = 0x0101, 0x0102, 0x0103
 MSG_OPENDSM, MSG_CLOSEDSM = 0x0301, 0x0302
@@ -98,7 +98,9 @@ NOMS_CAP = {
 }
 ICAP_PIXELTYPE, ICAP_XRESOLUTION, ICAP_YRESOLUTION = 0x0101, 0x1118, 0x1119
 ICAP_XFERMECH, ICAP_IMAGEFILEFORMAT = 0x0103, 0x110C
-CAP_SUPPORTEDCAPS, CAP_DUPLEXENABLED = 0x1005, 0x1013
+CAP_XFERCOUNT, CAP_SUPPORTEDCAPS, CAP_DUPLEXENABLED = 0x0001, 0x1005, 0x1013
+TWTY_INT16 = 0x1
+BROTHER_ATTENTE_FEUILLE = 0x925A
 TWPT = {"nb": 0, "gris": 1, "couleur": 2}  # ICAP_PIXELTYPE : BW, GRAY, RGB
 # Transfert par fichier (TWSX_FILE) au format BMP (TWFF_BMP). Pourquoi pas le transfert
 # natif (TWSX_NATIVE, le plus courant) : le 25/10, la source Brother 64 bits a rendu
@@ -404,6 +406,14 @@ def scanner(args):
         s.ecrire_cap(ICAP_XRESOLUTION, TWTY_FIX32, float_vers_fix32(args.dpi))
         s.ecrire_cap(ICAP_YRESOLUTION, TWTY_FIX32, float_vers_fix32(args.dpi))
         s.ecrire_cap(CAP_DUPLEXENABLED, TWTY_BOOL, 1 if args.recto_verso else 0)
+        # Nombre d'images attendues. Sans lui (-1 par défaut), la source affiche « En attente
+        # du prochain travail… » et attend une autre feuille jusqu'à la fin du décompte.
+        attendues = args.feuilles * (2 if args.recto_verso else 1)
+        s.ecrire_cap(CAP_XFERCOUNT, TWTY_INT16, attendues)
+        # Réglage Brother 0x925A : délai (s) pendant lequel la source attend qu'on insère
+        # une feuille, au début comme entre deux feuilles. Déduit le 25/10 : à 1, la source
+        # répond aussitôt « Aucun document dans le module d'alimentation automatique ».
+        s.ecrire_cap(BROTHER_ATTENTE_FEUILLE, TWTY_UINT16, args.attente)
         s.ecrire_cap(ICAP_XFERMECH, TWTY_UINT16, TWSX_FILE)
         s.ecrire_cap(ICAP_IMAGEFILEFORMAT, TWTY_UINT16, TWFF_BMP)
         for regle in args.regle:
@@ -416,7 +426,7 @@ def scanner(args):
         if args.capture:
             print(capture.demarrer(args.capture, duree=args.duree))
         try:
-            images = acquerir(s, sortie, base, args.delai)
+            images = acquerir(s, sortie, base, args.delai, attendues)
         finally:
             if args.capture:
                 time.sleep(1.0)  # laisser passer les derniers échanges après le scan
@@ -425,14 +435,15 @@ def scanner(args):
         print(f"image {chemin} : {l} x {h}, {bits} bits par pixel")
 
 
-def acquerir(s, sortie, base, delai):
+def acquerir(s, sortie, base, delai, attendues):
     """États 5 à 7 : active la source sans interface, attend MSG_XFERREADY dans la
     boucle de messages, transfère chaque image dans un fichier BMP, puis désactive."""
     ui = TW_USERINTERFACE(ShowUI=0, ModalUI=0, hParent=s.hwnd)
     s.verifier(s.appel(DG_CONTROL, DAT_USERINTERFACE, MSG_ENABLEDS, ui), "activation de la source")
     images = []
     msg = wintypes.MSG()
-    limite = time.monotonic() + delai
+    debut = time.monotonic()
+    limite = debut + delai
     fini = False
     try:
         while not fini:
@@ -444,7 +455,8 @@ def acquerir(s, sortie, base, delai):
             ev = TW_EVENT(pEvent=ctypes.cast(ctypes.byref(msg), ctypes.c_void_p), TWMessage=0)
             rc = s.appel(DG_CONTROL, DAT_EVENT, MSG_PROCESSEVENT, ev)
             if ev.TWMessage == MSG_XFERREADY:
-                images += transferer(s, sortie, base, len(images))
+                print(f"{time.monotonic() - debut:6.1f} s  MSG_XFERREADY")
+                images += transferer(s, sortie, base, len(images), debut, attendues)
                 fini = True
             elif ev.TWMessage in (MSG_CLOSEDSREQ, MSG_CLOSEDSOK):
                 fini = True
@@ -453,10 +465,11 @@ def acquerir(s, sortie, base, delai):
                 user32.DispatchMessageW(ctypes.byref(msg))
     finally:
         s.appel(DG_CONTROL, DAT_USERINTERFACE, MSG_DISABLEDS, ui)
+        print(f"{time.monotonic() - debut:6.1f} s  source désactivée")
     return images
 
 
-def transferer(s, sortie, base, deja):
+def transferer(s, sortie, base, deja, debut, attendues):
     images = []
     en_attente = TW_PENDINGXFERS(Count=1)
     while en_attente.Count != 0:
@@ -468,13 +481,22 @@ def transferer(s, sortie, base, deja):
         fichier = TW_SETUPFILEXFER(FileName=str(chemin).encode("mbcs"), Format=TWFF_BMP, VRefNum=0)
         s.verifier(s.appel(DG_CONTROL, DAT_SETUPFILEXFER, MSG_SET, fichier), "choix du fichier")
         rc = s.appel(DG_IMAGE, DAT_IMAGEFILEXFER, MSG_GET, None)
+        print(f"{time.monotonic() - debut:6.1f} s  transfert : {TWRC.get(rc, rc)}")
         if rc == TWRC_XFERDONE:
             images.append((chemin, dimensions_bmp(chemin)))
         elif rc == TWRC_CANCEL:
             print("transfert annulé par la source")
         else:
             raise ErreurTwain(f"transfert : {TWRC.get(rc, rc)}, condition {s.statut()}")
-        s.appel(DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER, en_attente)
+        if deja + len(images) >= attendues:
+            # Dernière image voulue : MSG_RESET au lieu de MSG_ENDXFER. Le pilote Brother
+            # ignore CAP_XFERCOUNT et, dans MSG_ENDXFER, attend une feuille de plus pendant
+            # le délai du réglage 0x925A (30 s par défaut) ; MSG_RESET vide la file d'attente.
+            s.appel(DG_CONTROL, DAT_PENDINGXFERS, MSG_RESET, en_attente)
+            en_attente.Count = 0
+        else:
+            s.appel(DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER, en_attente)
+        print(f"{time.monotonic() - debut:6.1f} s  fin de transfert, encore {en_attente.Count} image(s)")
     return images
 
 
@@ -486,6 +508,9 @@ def main():
     sc.add_argument("--mode", choices=TWPT, default="gris")
     sc.add_argument("--dpi", type=float, default=300)
     sc.add_argument("--recto-verso", action="store_true")
+    sc.add_argument("--feuilles", type=int, default=1, help="nombre de feuilles à scanner")
+    sc.add_argument("--attente", type=int, default=120,
+                    help="délai (s) laissé pour insérer la feuille (réglage Brother 0x925A)")
     sc.add_argument("--regle", action="append", default=[], metavar="CODE=VALEUR",
                     help="réglage supplémentaire, ex. 0x1101=20 (répétable)")
     sc.add_argument("--capture", metavar="NOM", help="encadrer le scan d'une capture USBPcap NOM.pcap")

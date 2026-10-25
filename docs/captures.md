@@ -81,3 +81,29 @@ Piège : Ctrl+C rend l'invite, mais USBPcapCMD continue dans un second processus
   - **0xC3** (vendeur), 740 CBW en lecture : 666 de 65 536 o et 74 de 32 256 o, soit 46 033 920 o. Première trame 82543 (10,66 s), dernière trame 128938 (17,43 s). Très probablement les données d'image ; le volume dépasse ce qu'attend une page A4 en gris 300 dpi (environ 8,7 Mo), à expliquer.
   - Commandes standard de Windows sur le faux disque : TEST UNIT READY (56), READ CAPACITY(10) (3), MODE SENSE(6) (2), READ(10) des secteurs 0, 0x20 et 0x23 (FAT et répertoire).
   - Pistes, **déduites et non vérifiées**, pour l'étape 3 : tous les CDB vendeur font 16 o et commencent par `xx 07`, puis les octets 2 à 5 ressemblent à une adresse et les octets 6 à 9 à la longueur de données, en gros-boutiste. Pour 0xC3, la lecture de 0x7E00 o à `0x01597600` est suivie d'une lecture à `0x0159F400`, soit 0x7E00 plus loin ; chaque CDB 0xC3 apparaît deux fois. Pour 0xC5, l'adresse vaut 0 et les octets 10 à 12 changent (`ff 04 00`, `02 01 02`, `02 02 02`…), comme un numéro de registre ou de canal.
+
+### Série 1e (25/10/2026)
+
+Toutes avec `-s 262144` : 0 trame tronquée. Scanner à l'adresse 15. « Pilotée » : capture et scan lancés par Claude (`twain_banc.py`, recadrage et redressement coupés). Images BMP dans `ds720d-captures\images\`.
+
+| Capture | Scénario | Octets lus par 0xC3 | SHA-256 |
+| --- | --- | --- | --- |
+| `1e-gris-300-recto` | Capture Tool, lancé par David | 37 324 800 | `4472092D60228219429C2A1B306963D5CDD4020BE8A4230B6E60BC90B77AD51E` |
+| `1e-insertion-feuille` | feuille approchée, sans scan | — | `A5080575ADBCADBF4EE08FA617B9E6F7C303EEFC1FF9542E1D7F48327DE750B7` |
+| `1e-retrait-insertion` | feuille retirée puis remise, sans scan | — | `13146A8CDA01393F8065DF630FEFA8276C898A315E5F53A7F27D13DF32B7A297` |
+| `1e-insertion-2` | feuille sortie complètement puis remise, sans scan | — | `7860D96C4735CA0A1D888B5EF8F3F42C6500A7F313E13AE9DDEC81AD31D83125` |
+| `1e-gris-300-recto-twain` | pilotée, gris 300 (image perdue) | 19 906 560 | `53A3EE74BFE218A77DA6F52A4BDAAEEEA7DC9C535D04768783880197D3B58B04` |
+| `1e-gris-300-recto-twain-2` | pilotée, gris 300 (image perdue) | 20 528 640 | `1A2E82D4693B7C3246390AA3559F3CEB673109A234184ABE4FAB6DED12A0AD3F` |
+| `1e-gris-300-recto-twain-3` | pilotée, gris 300, image 2548 × 4200 | 19 906 560 | `4D0A8A0FFDF1853EAB1190057919582BCE96EF14936294E74C88FDD3A2BFACDE` |
+| `1e-couleur-300-recto` | pilotée, couleur 300, image 2548 × 4200 × 24 bits | 19 906 560 | `2E7A4ECB9CC698ACAC1F13C5C728BDD0CFA3B4AD115ADC78D331C034418396A0` |
+| `1e-gris-300-recto-verso` | pilotée, gris 300 recto-verso, 2 feuilles, 4 images | 87 091 200 | `A0994D257E92228E05F2A7D2B31D373AC41FA9D348821428301B897C59A03204` |
+| `1e-sans-papier` | pilotée, délai 0x925A à 1 s, « Aucun document » | — | `FFAE4A1C159939AAC3A474AD75B9E3D18D60DEB3B4B583B2EF1A922DAFC8ED78` |
+| `1e-gris-600-recto` | pilotée, gris 600, image 5100 × 8400 | 40 435 200 | `AABA5971843C631CBF3A4ED06B4F2E8DA0F5766DD82E7EB356313261672D69BA` |
+| `1e-nb-300-recto` | pilotée, noir et blanc 300, d'abord « Aucun document » puis scan | 19 906 560 | `9A3D8E41A3759D480ADB4810644C5F0827A2B52541C7C44F7A8B88A357AB8CDC` |
+
+Constats, à approfondir à l'étape 3 :
+- **Le volume lu par 0xC3 ne dépend pas du mode** à 300 dpi : 19 906 560 o en gris, en couleur et en noir et blanc. Le scanner enverrait toujours les mêmes données, et le pilote Brother ferait le gris ou le noir et blanc sur le PC (déduction).
+- À 600 dpi, le volume ne fait que doubler (40 435 200 o), alors que l'image a quatre fois plus de pixels.
+- Ni l'approche, ni le retrait, ni la remise d'une feuille ne changent la moindre réponse aux interrogations de Button Manager. L'évènement `81 03 00 00 00 00 01 00`, vu une fois dans `1e-gris-300-recto` juste avant le scan, reste inexpliqué.
+- Pilote TWAIN Brother : il ignore `CAP_XFERCOUNT` et attend une feuille de plus après chaque feuille ; le réglage `0x925A` est ce délai en secondes (déduit : à 1 s, « Aucun document » immédiat).
+- `contre_verif.py` sur `1e-couleur-300-recto` : 0 écart sur 29 155 CBW et 29 155 CSW.
