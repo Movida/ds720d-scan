@@ -11,6 +11,8 @@ Pilote écrit à la main pour le scanner USB **Brother DS-720D** (`VID_04F9&PID_
 - Phase d'apprentissage d'abord, en espace utilisateur sur **WinUSB** : on apprend le protocole sans risquer d'écran bleu. Passer le scanner sous WinUSB coupe le logiciel Brother : toutes les captures de référence se font avant.
 - Aucune bibliothèque qui fait le travail à notre place : ni SANE, ni TWAIN/WIA, ni pilote Brother, ni libusb, ni pyshark/scapy.
 - Niveau le plus bas partout : descripteurs, endpoints, URB, transferts bulk, CBW/CSW écrits octet par octet, commandes SCSI encapsulées.
+- Code C (`src/`) : `peripherique.c` (WinUSB : recherche par SetupAPI, transferts de contrôle et bulk), `bot.c` (transport Bulk-Only, CBW et CSW), `trace.c` (trace au format commun), `ds720d.c` (le programme). Construction : `construire.cmd` (MSVC des Build Tools 2022 et Windows SDK 10.0.26100, `nmake` sur le `Makefile`), sorties dans `out/`, compilation en `/W4 /WX`.
+- Depuis l'étape 2, le scanner est sous **WinUSB** (classe USBDevice), posé par `out\bascule_winusb.exe --oui` en admin ; retour au pilote Brother par deux commandes `pnputil` : [docs/winusb.md](docs/winusb.md). `ds720d.exe` refuse d'ouvrir le scanner s'il n'est pas sous WinUSB.
 
 ## Sources qui font foi
 
@@ -24,17 +26,19 @@ Pilote écrit à la main pour le scanner USB **Brother DS-720D** (`VID_04F9&PID_
 - N'envoyer aucune commande SCSI qui n'est ni observée dans une capture ni documentée dans une spec. Une commande vendeur observée mais d'effet inconnu (écritures 0xC5 notamment) ne s'envoie qu'une fois son rôle compris et avec l'accord de David.
 - Jamais de mise à jour du firmware.
 - Phase noyau : mode test-signing, point de restauration et débogage noyau (WinDbg, idéalement dans une VM Windows avec passage USB) mis en place **avec l'accord écrit de David** avant le premier chargement du pilote. Toute modification de bcdedit, Secure Boot ou de la signature des pilotes demande son accord explicite.
-- Rien installer, désinstaller, télécharger ni exécuter de binaire tiers sans l'accord écrit de David. Le mode auto de Claude Code bloque `winget install` : c'est David qui lance les installations.
-- Le logiciel Brother (service Mobile_Series, TWAIN, NvUSBScan.dll) reste en place tant qu'il sert de référence ; son retrait se décide avec David.
+- Rien installer, désinstaller, télécharger ni exécuter de binaire tiers sans l'accord écrit de David. Le mode auto de Claude Code bloque `winget install` : c'est David qui lance les installations, et tout ce qui demande les droits admin (Claude tourne sans élévation).
+- Le logiciel Brother (service Mobile_Series, TWAIN, NvUSBScan.dll) reste en place tant qu'il sert de référence ; son retrait se décide avec David. Sous WinUSB, il ne voit plus le scanner : pour une nouvelle capture de référence, revenir d'abord à USBSTOR ([docs/winusb.md](docs/winusb.md)).
 
 ## Banc de test
 
 - Référence : captures USBPcap du logiciel Brother, rangées **hors du dépôt** dans `C:\Users\morva\ds720d-captures\` et consignées (empreinte, scénario) dans [docs/captures.md](docs/captures.md). Elles contiennent des images de documents : jamais commitées, pas plus que les images BMP.
-- Outils (`banc/`) : `analyse_capture.py` (décodage fait main), `contre_verif.py` (comparaison avec tshark), `capture.py` et la tâche planifiée `ds720d-capture` (captures sans élévation), `twain_banc.py` (scans du pilote Brother).
+- Outils (`banc/`) : `analyse_capture.py` (décodage fait main), `contre_verif.py` (comparaison avec tshark), `capture.py` et la tâche planifiée `ds720d-capture` (captures sans élévation), `twain_banc.py` (scans du pilote Brother), `compare_traces.py` (deux traces au format commun, sans les colonnes trame, temps et adresse). Essai sans matériel : `out\essai_trace.exe`.
 - TWAIN ne sert qu'à faire travailler le pilote Brother pour les captures de référence (accord de David du 25/10) ; jamais dans notre code.
 - Toujours capturer avec `-s 262144` ; `--resume` de l'analyseur doit afficher « trames tronquées à la capture (snaplen) : 0 ».
 - Le numéro de série du scanner (descripteur STRING, réponses 0xC5 de 128 et 165 o, réglages TWAIN 0x1024 et 0x9214) ne va jamais dans le dépôt : l'analyseur le masque par défaut (`--serie` pour le voir), le reste se vérifie avant de copier une trace.
 - Notre code trace chaque transfert qu'il émet au [format commun](docs/format-trace.md), pour comparer ligne à ligne avec les captures. En phase noyau : traces WPP/DbgPrint.
+- Contrôle croisé à chaque essai sur le scanner : notre trace (`--trace`), la capture USBPcap de notre passage et la référence du pilote Windows doivent concorder (`compare_traces.py`, `--sans-tags` contre la référence). Nos captures sont consignées dans [docs/captures.md](docs/captures.md).
+- Après un passage par `pnputil`, USBPcap ne voit plus le scanner : le débrancher et le rebrancher avant de capturer.
 
 ## Façon de travailler
 

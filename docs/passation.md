@@ -1,4 +1,4 @@
-# Passation (mise à jour le 25/10/2026, fin de l'étape 1)
+# Passation (mise à jour le 25/10/2026, fin de l'étape 2)
 
 Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un pilote KMDF (voir [HISTORIQUE.md](../HISTORIQUE.md)). Les règles sont dans [CLAUDE.md](../CLAUDE.md).
 
@@ -21,7 +21,8 @@ Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un p
 | Python | 3.14.7, pour le banc de test |
 | Tâche planifiée `ds720d-capture` | Lance USBPcapCMD en admin pour Claude, depuis `C:\ProgramData\ds720d\` (voir [captures.md](captures.md)) |
 | Client TWAIN de banc | `banc/twain_banc.py`, fait scanner le pilote Brother sans Capture Tool ; côté référence seulement |
-| Chaîne C | **Aucune** : Build Tools Visual Studio et Windows SDK à installer par David avant l'étape 2, WDK avant l'étape 6 |
+| Chaîne C | Build Tools Visual Studio 2022 (17.14), compilateur C x64 et Windows SDK 10.0.26100 ; `construire.cmd` les trouve par vswhere. WDK à installer par David avant l'étape 6 |
+| Pilote du scanner | **WinUSB** depuis l'étape 2 (classe USBDevice, nom « DS-720D »), posé par `out\bascule_winusb.exe --oui` ; F: et le logiciel Brother ne le voient plus. Retour à USBSTOR : [winusb.md](winusb.md) |
 
 ## Voie retenue
 
@@ -44,9 +45,14 @@ Cadre légal : l'art. L122-6-1 IV du CPI autorise l'étude d'un logiciel pour l'
    - 1c. Capture d'un scan avec Capture Tool (tronquée, remplacée par 1e).
    - 1d. Analyseur de captures fait main, contre-vérifié par tshark.
    - 1e. Captures pilotées par Claude (tâche planifiée, client TWAIN) : gris, couleur, noir et blanc 300 dpi, gris 600 dpi, recto-verso, « pas de papier ».
-2. Passage sous WinUSB et premier programme C : descripteurs lus par transferts de contrôle (USB 2.0 §9.4.3), Get Max LUN (BOT §3.2), INQUIRY encapsulé à la main, trace de chaque transfert.
-   - Prérequis : chaîne C installée par David. Piste à vérifier pour WinUSB : le pilote générique « WinUsb Device » de Windows (winusb.inf, livré avec le système), choisi à la main dans le Gestionnaire de périphériques, sans INF maison ni signature. Il coupe le logiciel Brother ; retour arrière en réinstallant USBSTOR.
-3. Rejouer la séquence de scan capturée : une page gris 300 dpi en image brute, puis PGM/PNG.
+2. ✓ Passage sous WinUSB et premier programme C (25/10) :
+   - 2a. Dernière capture de référence, sans Button Manager : la séquence de scan seule.
+   - 2b. Chaîne MSVC, trace en C au format commun, comparateur de traces.
+   - 2c. Bascule sous WinUSB par `bascule_winusb.exe` (le Gestionnaire de périphériques refuse, classe différente), retour par `pnputil` éprouvé.
+   - 2d. Descripteurs lus par transferts de contrôle faits main (USB 2.0 §9.4.3).
+   - 2e. GET_MAX_LUN (BOT §3.2) : un seul LUN.
+   - 2f. INQUIRY dans un CBW écrit octet par octet (BOT §5), CSW contrôlé (BOT §6.3).
+3. Rejouer la séquence de scan capturée (`2a-gris-300-recto-sans-bm`) : une page gris 300 dpi en image brute, puis PGM/PNG. D'abord décoder les écritures 0xC5 (piste : commandes de scanner SCSI emballées) ; celles dont l'effet reste inconnu demandent l'accord de David. Ajouter alors la récupération d'erreur Bulk-Only (BOT §5.3.4), absente de l'étape 2.
 4. Couleur et recto-verso.
 5. Préparation noyau (accord écrit de David) : VM avec passage USB, WinDbg, test-signing, point de restauration.
 6. Pilote KMDF : configuration, pipes bulk, URB, interface IOCTL vers un petit outil utilisateur, traces WPP.

@@ -4,4 +4,6 @@ Pilote écrit à la main, en C, pour le scanner mobile **Brother DS-720D** sous 
 
 Projet d'apprentissage : rétro-ingénierie du protocole USB par captures, prototype en espace utilisateur sur WinUSB, puis pilote noyau KMDF.
 
-État : étape 1 terminée (captures de référence et banc d'analyse) ; étape 2, premier programme C sur WinUSB, à venir. Voir [docs/passation.md](docs/passation.md) et [HISTORIQUE.md](HISTORIQUE.md).
+État : étape 2 terminée. Le scanner est sous WinUSB, et `ds720d.exe` lit ses descripteurs, demande son nombre de LUN et lui envoie un INQUIRY écrit à la main. Étape 3, rejouer un scan, à venir.
+
+Construction : `construire.cmd` (Build Tools Visual Studio 2022 et Windows SDK), puis `out\ds720d.exe inquiry --trace out\trace.txt`. Voir [docs/passation.md](docs/passation.md) et [HISTORIQUE.md](HISTORIQUE.md).
