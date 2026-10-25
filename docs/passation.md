@@ -23,7 +23,7 @@ Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un p
 | Client TWAIN de banc | `banc/twain_banc.py`, fait scanner le pilote Brother sans Capture Tool ; côté référence seulement |
 | Chaîne C | Build Tools Visual Studio 2022 (17.14), compilateur C x64 et Windows SDK 10.0.26100 ; `construire.cmd` les trouve par vswhere. WDK à installer par David avant l'étape 6 |
 | Pilote du scanner | **WinUSB** depuis l'étape 2 (classe USBDevice, nom « DS-720D »), posé par `out\bascule_winusb.exe --oui` ; F: et le logiciel Brother ne le voient plus. Retour à USBSTOR : [winusb.md](winusb.md) |
-| Programmes | `out\ds720d.exe` (`descripteurs`, `lun`, `inquiry`, `etat`, `papier`, `scan --sortie FICHIER.brut`), `out\convertir.exe` (brut vers PGM ou PNG) |
+| Programmes | `out\ds720d.exe` (`descripteurs`, `lun`, `inquiry`, `etat`, `papier`, `scan --sortie FICHIER.brut`), `out\convertir.exe` (brut vers PGM ou PNG, page rendue comme par le pilote Brother ou `--brut`) |
 | Câble | Faux contacts possibles pendant un scan (25/10, capture `3e-scan`) : le scanner quitte le bus. Vérifier le câble avant de soupçonner le code |
 
 ## Voie retenue

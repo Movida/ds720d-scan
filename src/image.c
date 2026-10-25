@@ -61,16 +61,18 @@ uint32_t image_adler32(uint32_t adler, const uint8_t *o, size_t lg)
 /* PGM                                                                       */
 /* ------------------------------------------------------------------------- */
 
-int image_pgm(const char *chemin, const uint8_t *brut, size_t lignes)
+int image_pgm(const char *chemin, const struct image *im)
 {
+    if (im->canaux != 1 || im->largeur == 0 || im->hauteur == 0)
+        return -1;
     FILE *f;
     if (fopen_s(&f, chemin, "wbx") != 0) /* « x » : ne jamais écraser une image */
         return -1;
     /* En-tête Netpbm : « P5 », largeur, hauteur, valeur maximale, séparés par des
      * blancs, puis un seul blanc avant les octets, ligne par ligne de haut en bas. */
-    int ok = fprintf(f, "P5\n%u %zu\n255\n", IMAGE_LARGEUR, lignes) > 0;
-    for (size_t y = 0; ok && y < lignes; y++)
-        ok = fwrite(brut + y * IMAGE_OCTETS_LIGNE + IMAGE_LARGEUR, 1, IMAGE_LARGEUR, f) == IMAGE_LARGEUR;
+    int ok = fprintf(f, "P5\n%u %u\n255\n", im->largeur, im->hauteur) > 0;
+    size_t total = (size_t)im->largeur * im->hauteur;
+    ok = ok && fwrite(im->points, 1, total, f) == total;
     return fclose(f) == 0 && ok ? 0 : -1;
 }
 
@@ -156,19 +158,28 @@ static int chunk(FILE *f, const char type[4], const uint8_t *donnees, uint32_t l
     return fwrite(t, 1, 8, f) == 8 && fwrite(donnees, 1, lg, f) == lg && fwrite(c, 1, 4, f) == 4 ? 0 : -1;
 }
 
-int image_png(const char *chemin, const uint8_t *brut, size_t lignes, int couleur, unsigned ppp_y)
+/* Points par mètre du chunk pHYs : n ppp / 0,0254 m, arrondi (300 → 11 811, 600 → 23 622). */
+static uint32_t points_par_metre(unsigned ppp)
+{
+    return (uint32_t)((ppp * 10000u + 127u) / 254u);
+}
+
+int image_png(const char *chemin, const struct image *im)
 {
     /* Signature, §5.2 : 89 « PNG » CR LF SUB LF, faite pour détecter les
      * transferts qui abîment les fins de ligne ou le 8e bit. */
     static const uint8_t signature[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
     static struct png p; /* 64 Kio de tampon : hors de la pile */
-    uint32_t canaux = couleur ? 3 : 1;
-    unsigned long long octets_ligne = 1ull + IMAGE_LARGEUR * canaux; /* octet de filtre + points */
-    unsigned long long donnees = octets_ligne * lignes;
+    if (im->canaux != 1 && im->canaux != 3)
+        return -1;
+    size_t points_ligne = (size_t)im->largeur * im->canaux;
+    unsigned long long octets_ligne = 1ull + points_ligne; /* octet de filtre + points */
+    unsigned long long donnees = octets_ligne * im->hauteur;
     unsigned long long blocs = (donnees + BLOC_STOCKE_MAX - 1) / BLOC_STOCKE_MAX;
     /* Flux zlib : CMF et FLG (2 o), blocs (5 o d'en-tête chacun), Adler-32 (4 o). */
     unsigned long long lg_zlib = 2 + donnees + 5 * blocs + 4;
-    if (lignes == 0 || lignes > 0x7FFFFFFF || lg_zlib > 0x7FFFFFFF) /* longueurs PNG sur 31 bits, §5.3 */
+    if (im->largeur == 0 || im->hauteur == 0 || im->largeur > 0x7FFFFFFF || im->hauteur > 0x7FFFFFFF ||
+        lg_zlib > 0x7FFFFFFF) /* longueurs PNG sur 31 bits, §5.3 */
         return -1;
 
     memset(&p, 0, sizeof p);
@@ -180,20 +191,21 @@ int image_png(const char *chemin, const uint8_t *brut, size_t lignes, int couleu
      * type de couleur 0 (gris) ou 2 (RVB), compression 0 (deflate), filtrage 0,
      * pas d'entrelacement. */
     uint8_t ihdr[13];
-    pose_be32(ihdr, IMAGE_LARGEUR);
-    pose_be32(ihdr + 4, (uint32_t)lignes);
+    pose_be32(ihdr, im->largeur);
+    pose_be32(ihdr + 4, im->hauteur);
     ihdr[8] = 8;
-    ihdr[9] = couleur ? 2 : 0;
+    ihdr[9] = im->canaux == 3 ? 2 : 0;
     ihdr[10] = ihdr[11] = ihdr[12] = 0;
     if (chunk(p.f, "IHDR", ihdr, sizeof ihdr) != 0)
         p.ok = 0;
 
-    /* pHYs, §11.3.5.3 : points par mètre (300 par pouce = 11 811), unité 1
-     * (mètre), pour qu'un logiciel affiche ou imprime la page à sa vraie taille et
-     * avec ses proportions : à 600 dpi, seule la résolution verticale double. */
+    /* pHYs, §11.3.5.3 : points par mètre, unité 1 (mètre), pour qu'un logiciel
+     * affiche ou imprime la page à sa vraie taille et avec ses proportions. Le
+     * brut à 600 dpi n'a que sa résolution verticale doublée (300 × 600) ; la
+     * page rendue, dont rendu.c double aussi la largeur, est à 600 × 600. */
     uint8_t phys[9];
-    pose_be32(phys, 11811);
-    pose_be32(phys + 4, ppp_y == 600 ? 23622 : 11811); /* 600 / 0,0254 m, arrondi */
+    pose_be32(phys, points_par_metre(im->ppp_x));
+    pose_be32(phys + 4, points_par_metre(im->ppp_y));
     phys[8] = 1;
     if (chunk(p.f, "pHYs", phys, sizeof phys) != 0)
         p.ok = 0;
@@ -211,20 +223,10 @@ int image_png(const char *chemin, const uint8_t *brut, size_t lignes, int couleu
     idat_ecrire(&p, zlib, 2);
     p.adler = 1;
     p.reste = donnees;
-    static uint8_t ligne[1 + 3 * IMAGE_LARGEUR];
-    for (size_t y = 0; y < lignes; y++) {
-        const uint8_t *src = brut + y * IMAGE_OCTETS_LIGNE;
-        ligne[0] = 0; /* filtre 0 (« None », §9.2) : les points tels quels */
-        if (couleur) {
-            for (uint32_t x = 0; x < IMAGE_LARGEUR; x++) { /* plans R, V, B → points RVB */
-                ligne[1 + 3 * x] = src[x];
-                ligne[2 + 3 * x] = src[IMAGE_LARGEUR + x];
-                ligne[3 + 3 * x] = src[2 * IMAGE_LARGEUR + x];
-            }
-        } else {
-            memcpy(ligne + 1, src + IMAGE_LARGEUR, IMAGE_LARGEUR); /* plan vert */
-        }
-        donnees_ecrire(&p, ligne, (size_t)octets_ligne);
+    for (uint32_t y = 0; y < im->hauteur; y++) {
+        static const uint8_t filtre = 0; /* filtre 0 (« None », §9.2) : les points tels quels */
+        donnees_ecrire(&p, &filtre, 1);
+        donnees_ecrire(&p, im->points + (size_t)y * points_ligne, points_ligne);
     }
     uint8_t a[4];
     pose_be32(a, p.adler); /* Adler-32 en gros-boutiste, RFC 1950 §2.2 */

@@ -17,17 +17,22 @@ LDFLAGS = /nologo /DEBUG
 
 all: out\essai_trace.exe out\essai_bot.exe out\essai_image.exe out\ds720d.exe out\convertir.exe out\bascule_winusb.exe
 
-# Image brute vers PGM ou PNG (étape 3f) : ne parle pas au scanner.
+# Image brute vers PGM ou PNG (étape 3f), rendue depuis l'étape 4d : ne parle pas au scanner.
 out\image.obj: src\image.c src\image.h
 	@if not exist out mkdir out
 	cl $(CFLAGS) /c /Fo$@ src\image.c
 
-out\convertir.obj: src\convertir.c src\image.h
+out\convertir.obj: src\convertir.c src\image.h src\rendu.h
 	@if not exist out mkdir out
 	cl $(CFLAGS) /c /Fo$@ src\convertir.c
 
-out\convertir.exe: out\convertir.obj out\image.obj
-	link $(LDFLAGS) /OUT:$@ out\convertir.obj out\image.obj
+# Rendu de la page (étape 4d) : recadrage, courbe de tons, verso, 600 dpi.
+out\rendu.obj: src\rendu.c src\rendu.h src\image.h
+	@if not exist out mkdir out
+	cl $(CFLAGS) /c /Fo$@ src\rendu.c
+
+out\convertir.exe: out\convertir.obj out\image.obj out\rendu.obj
+	link $(LDFLAGS) /OUT:$@ out\convertir.obj out\image.obj out\rendu.obj
 
 # Sommes de contrôle de image.c contre des valeurs de référence publiées.
 out\essai_image.obj: src\essai_image.c src\image.h

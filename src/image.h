@@ -1,9 +1,10 @@
 /*
- * image.h : écriture de l'image brute du DS-720D en PGM et en PNG, à la main.
+ * image.h : écriture d'une image en PGM et en PNG, à la main.
  *
- * L'image brute est celle que rendent les lectures 0xC3 (docs/protocole.md §5) :
- * des lignes de 3 plans de 2 592 points, rouge, vert, bleu, 8 bits. Ce module
- * n'en change pas les valeurs : pas de recadrage, pas de courbe de tons.
+ * L'image arrive déjà prête (struct image) : soit les plans bruts tels que les
+ * rendent les lectures 0xC3 (docs/protocole.md §5), soit la page rendue par
+ * rendu.c (recadrage, courbe de tons, miroir du verso, largeur doublée à
+ * 600 dpi). Ce module ne change aucune valeur : il ne fait que l'encodage.
  */
 #ifndef DS720D_IMAGE_H
 #define DS720D_IMAGE_H
@@ -11,19 +12,25 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define IMAGE_LARGEUR 2592u                    /* points par ligne et par plan */
-#define IMAGE_OCTETS_LIGNE (3u * IMAGE_LARGEUR) /* une ligne : rouge, vert, bleu */
+#define IMAGE_LARGEUR 2592u                    /* points bruts par ligne et par plan */
+#define IMAGE_OCTETS_LIGNE (3u * IMAGE_LARGEUR) /* une ligne brute : rouge, vert, bleu */
 
-/* PGM binaire (« P5 », spécification Netpbm) en 8 bits, plan vert seul : c'est
- * lui que suit le gris du pilote Brother (protocole.md §5). */
-int image_pgm(const char *chemin, const uint8_t *brut, size_t lignes);
+/* Image à encoder : points ligne par ligne, de haut en bas, sans bourrage ;
+ * 1 canal (gris) ou 3 entrelacés (rouge, vert, bleu). ppp_x et ppp_y vont dans le
+ * chunk pHYs du PNG (300 ou 600). */
+struct image {
+    uint32_t largeur, hauteur, canaux;
+    unsigned ppp_x, ppp_y;
+    uint8_t *points;
+};
 
-/* PNG (ISO/IEC 15948, « PNG Specification, Second Edition ») 8 bits, en gris
- * (plan vert) ou en couleur (RVB), données zlib en blocs deflate « stockés »,
- * sans compression. ppp_y : résolution verticale de la fenêtre (300 ou 600 ;
- * l'horizontale vaut toujours 300, protocole.md §5), pour le chunk pHYs.
+/* PGM binaire (« P5 », spécification Netpbm) en 8 bits ; image en gris seulement. */
+int image_pgm(const char *chemin, const struct image *im);
+
+/* PNG (ISO/IEC 15948, « PNG Specification, Second Edition ») 8 bits, en gris ou
+ * en RVB, données zlib en blocs deflate « stockés », sans compression.
  * Renvoie 0 si tout va bien. */
-int image_png(const char *chemin, const uint8_t *brut, size_t lignes, int couleur, unsigned ppp_y);
+int image_png(const char *chemin, const struct image *im);
 
 /* CRC-32 de PNG (annexe D) et Adler-32 de zlib (RFC 1950 §8), exposés pour le
  * banc d'essai : valeurs de référence connues à vérifier. */
