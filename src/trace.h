@@ -34,6 +34,10 @@ void trace_data_in(const uint8_t *donnees, size_t lg);
 void trace_data_out(const uint8_t *donnees, size_t lg);
 void trace_csw(const uint8_t csw[13]);
 
+/* URB sans données, sous le nom que lui donne USBPcap (fonction URB_FUNCTION_*
+ * du WDK, usb.h, sans le préfixe), ex. SYNC_RESET_PIPE_AND_CLEAR_STALL. */
+void trace_urb(const char *fonction, uint8_t endpoint);
+
 /* Transfert qui a échoué : endpoint, type (« contrôle », « bulk ») et code
  * d'erreur Win32 rendu par GetLastError() après l'appel WinUSB. */
 void trace_erreur(uint8_t endpoint, const char *type, unsigned long code_win32);

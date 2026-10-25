@@ -34,4 +34,9 @@ long periph_controle(const uint8_t setup[8], uint8_t *donnees);
 long periph_bulk_ecrire(uint8_t endpoint, const uint8_t *donnees, size_t lg, unsigned long *erreur);
 long periph_bulk_lire(uint8_t endpoint, uint8_t *donnees, size_t lg, unsigned long *erreur);
 
+/* Débloque un endpoint bulk après un STALL : CLEAR_FEATURE(ENDPOINT_HALT) côté
+ * appareil (USB 2.0 §9.4.1, §9.4.5) et remise à DATA0 du basculement de données
+ * côté hôte (§8.6.4). Renvoie 0 si tout va bien, -1 sinon. */
+int periph_debloquer(uint8_t endpoint);
+
 #endif

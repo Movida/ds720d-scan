@@ -233,6 +233,23 @@ long periph_bulk_ecrire(uint8_t endpoint, const uint8_t *donnees, size_t lg, uns
     return (long)transferes;
 }
 
+int periph_debloquer(uint8_t endpoint)
+{
+    /* Pourquoi WinUsb_ResetPipe et pas un CLEAR_FEATURE écrit à la main par
+     * periph_controle : l'appareil remet son basculement DATA0/DATA1 à zéro en
+     * recevant CLEAR_FEATURE(ENDPOINT_HALT) (USB 2.0 §9.4.5), et l'hôte doit faire
+     * de même, sans quoi le paquet suivant serait pris pour un doublon et ignoré
+     * (§8.6.4). Un SETUP envoyé par WinUsb_ControlTransfer ne toucherait que
+     * l'appareil ; WinUsb_ResetPipe fait les deux, comme USBSTOR le fait pour
+     * Windows en 1b (trame 19241, URB SYNC_RESET_PIPE_AND_CLEAR_STALL). */
+    trace_urb("SYNC_RESET_PIPE_AND_CLEAR_STALL", endpoint);
+    if (!WinUsb_ResetPipe(winusb, endpoint)) {
+        trace_erreur(endpoint, "reset", GetLastError());
+        return -1;
+    }
+    return 0;
+}
+
 long periph_bulk_lire(uint8_t endpoint, uint8_t *donnees, size_t lg, unsigned long *erreur)
 {
     ULONG transferes = 0;

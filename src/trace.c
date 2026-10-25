@@ -363,6 +363,109 @@ static void decrire_reponse_scsi(const uint8_t *d, size_t lg)
 }
 
 /* ------------------------------------------------------------------------- */
+/* Protocole vendeur du DS-720D (docs/protocole.md) : même texte que la       */
+/* section 5 de l'analyseur. Les chaînes de cette section sont écrites en     */
+/* UTF-8 littéral (option /utf-8 du Makefile) plutôt qu'en échappements \x :  */
+/* plus lisibles, et sans le piège d'un \xA9 suivi d'une lettre a à f, que le */
+/* compilateur avalerait dans l'échappement.                                 */
+/* ------------------------------------------------------------------------- */
+
+static uint32_t be32(const uint8_t *p)
+{
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | (uint32_t)p[3];
+}
+
+/* Troisième octet k des sélecteurs 02 01 k et 02 02 k (docs/protocole.md §2). */
+static const char *genre_reponse(uint8_t k)
+{
+    static const char *noms[] = {"données", "statut", "bloc d'image", "identifiant fabricant",
+                                 "identifiant produit"};
+    return k < sizeof noms / sizeof noms[0] ? noms[k] : NULL;
+}
+
+static void nom_selecteur(char *dst, size_t taille, const uint8_t s[3])
+{
+    const char *genre = genre_reponse(s[2]);
+    if (s[0] == 0xFF && s[1] == 0x02 && s[2] == 0)
+        snprintf(dst, taille, "signature");
+    else if (s[0] == 0xFF && s[1] >= 0x03 && s[1] <= 0x06 && s[2] == 0)
+        snprintf(dst, taille, "sondage d'état");
+    else if (s[0] == 0x02 && s[1] == 0x03 && s[2] == 0)
+        snprintf(dst, taille, "dépôt d'une commande");
+    else if (s[0] == 0x02 && (s[1] == 0x01 || s[1] == 0x02) && genre)
+        snprintf(dst, taille, "%s, %s", s[1] == 0x01 ? "en-tête de réponse" : "réponse", genre);
+    else
+        snprintf(dst, taille, "inconnu");
+}
+
+/* Ligne de détail sous un CBW 0xC3 ou 0xC5, avec les écarts à la forme connue
+ * du CDB signalés par « !! », dans le même ordre que l'analyseur. */
+static void decrire_cdb_vendeur(void)
+{
+    char buf[LG_LIGNE], nom[64];
+    size_t pos;
+    if (cbw_lg_cdb != 16) {
+        snprintf(buf, sizeof buf, "!! CDB vendeur de %zu o (attendu 16)", cbw_lg_cdb);
+        suite(buf);
+        return;
+    }
+    uint32_t adresse = be32(cbw_cdb + 2), longueur = be32(cbw_cdb + 6);
+    if (cbw_cdb[0] == 0xC5) {
+        char sel[16];
+        hexa(sel, sizeof sel, cbw_cdb + 10, 3, -1);
+        nom_selecteur(nom, sizeof nom, cbw_cdb + 10);
+        pos = (size_t)snprintf(buf, sizeof buf, "tunnel 0xC5, sélecteur %s : %s, %u o", sel, nom, longueur);
+    } else {
+        pos = (size_t)snprintf(buf, sizeof buf, "lecture 0xC3 à l'adresse 0x%08X, %u o", adresse, longueur);
+    }
+    if (cbw_cdb[1] != 0x07)
+        pos += (size_t)snprintf(buf + pos, sizeof buf - pos, "  !! octet 1 = 0x%02X (attendu 07)", cbw_cdb[1]);
+    if (cbw_cdb[13] | cbw_cdb[14] | cbw_cdb[15])
+        pos += (size_t)snprintf(buf + pos, sizeof buf - pos, "  !! octets 13-15 non nuls");
+    if (cbw_cdb[0] == 0xC5 && adresse)
+        snprintf(buf + pos, sizeof buf - pos, "  !! adresse 0x%08X (attendue 0)", adresse);
+    if (cbw_cdb[0] == 0xC3 && (cbw_cdb[10] | cbw_cdb[11] | cbw_cdb[12]))
+        snprintf(buf + pos, sizeof buf - pos, "  !! octets 10-12 non nuls");
+    suite(buf);
+}
+
+/* Détail des réponses 0xC5 qu'on sait lire (docs/protocole.md §2 et §4). */
+static void decrire_reponse_vendeur(const uint8_t *d, size_t lg)
+{
+    char buf[LG_LIGNE];
+    if (cbw_lg_cdb != 16 || cbw_cdb[0] != 0xC5)
+        return;
+    const uint8_t *s = cbw_cdb + 10;
+    if (s[0] == 0xFF && s[1] == 0x02 && s[2] == 0 && lg == 4) {
+        /* decode("ascii", errors="replace") : un octet non ASCII devient U+FFFD. */
+        size_t pos = (size_t)snprintf(buf, sizeof buf, "signature « ");
+        for (size_t k = 0; k < 4; k++) {
+            if (d[k] < 0x80) {
+                buf[pos++] = (char)d[k];
+            } else {
+                memcpy(buf + pos, "\xEF\xBF\xBD", 3);
+                pos += 3;
+            }
+        }
+        snprintf(buf + pos, sizeof buf - pos, " »");
+        suite(buf);
+    } else if (s[0] == 0x02 && s[1] == 0x02 && s[2] == 2 && lg == 24) {
+        /* Six mots de 32 bits petit-boutistes : état, ?, ?, deux facteurs, adresse. */
+        uint32_t etat = le32(d), a = le32(d + 12), b = le32(d + 16), adresse = le32(d + 20);
+        const char *nom = etat == 0 ? "pas prêt" : etat == 1 ? "prêt" : etat == 3 ? "fin de page" : "?";
+        snprintf(buf, sizeof buf, "bloc d'image : état %u (%s), %u × %u = %llu o, adresse 0x%08X",
+                 etat, nom, a, b, (unsigned long long)a * b, adresse);
+        suite(buf);
+    } else if (s[0] == 0x02 && s[1] == 0x02 && (s[2] == 3 || s[2] == 4) && lg == 2) {
+        snprintf(buf, sizeof buf, "identifiant 0x%04X", (unsigned)(d[0] << 8 | d[1])); /* gros-boutiste */
+        suite(buf);
+    } else if (s[0] == 0x02 && s[1] == 0x02 && s[2] == 1 && lg == 4) {
+        snprintf(buf, sizeof buf, "statut de la commande : 0x%08X", le32(d));
+        suite(buf);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
 /* Interface publique                                                        */
 /* ------------------------------------------------------------------------- */
 
@@ -467,6 +570,8 @@ void trace_cbw(const uint8_t cbw[31])
     snprintf(buf, sizeof buf, "tag=0x%08X lun=%u %s %u o  CDB[%zu]=%s  %s", cbw_tag, cbw[13],
              (cbw[12] & 0x80) ? "IN" : "OUT", le32(cbw + 8), cbw_lg_cdb, hx, op);
     ligne("CBW", buf);
+    if (cbw_lg_cdb && (cbw_cdb[0] == 0xC5 || cbw_cdb[0] == 0xC3))
+        decrire_cdb_vendeur();
 }
 
 /* Vrai si la réponse à la commande en cours peut contenir le numéro de série
@@ -494,8 +599,10 @@ void trace_data_in(const uint8_t *donnees, size_t lg)
     hexa(hx, sizeof hx, donnees, lg, OCTETS_MAX);
     snprintf(buf, sizeof buf, "%zu o  %s", lg, hx);
     ligne("DATA-IN", buf);
-    if (cbw_en_cours)
+    if (cbw_en_cours) {
         decrire_reponse_scsi(donnees, lg);
+        decrire_reponse_vendeur(donnees, lg);
+    }
 }
 
 void trace_data_out(const uint8_t *donnees, size_t lg)
@@ -523,6 +630,13 @@ void trace_csw(const uint8_t csw[13])
     snprintf(buf, sizeof buf, "tag=0x%08X statut=%u (%s) r\xC3\xA9sidu=%u%s", tag, statut,
              statut < 3 ? statuts[statut] : "?", le32(csw + 8), alerte);
     ligne("CSW", buf);
+}
+
+void trace_urb(const char *fonction, uint8_t endpoint)
+{
+    char buf[128];
+    snprintf(buf, sizeof buf, "%s ep=0x%02X", fonction, endpoint); /* comme l'analyseur */
+    ligne("URB", buf);
 }
 
 void trace_erreur(uint8_t endpoint, const char *type, unsigned long code_win32)

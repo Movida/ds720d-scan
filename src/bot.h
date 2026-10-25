@@ -14,8 +14,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Endpoints bulk lus dans les descripteurs, à fournir avant toute commande. */
-void bot_init(uint8_t ep_in, uint8_t ep_out);
+/* Interface Bulk-Only et ses endpoints bulk, lus dans les descripteurs, à
+ * fournir avant toute commande. L'interface sert à la Reset Recovery. */
+void bot_init(uint8_t interface, uint8_t ep_in, uint8_t ep_out);
+
+/* Reset Recovery (BOT §5.3.4) : Bulk-Only Mass Storage Reset puis Clear Feature
+ * HALT sur les deux endpoints. bot_commande_in l'appelle d'elle-même quand le
+ * transport est perdu. Renvoie 0 si les trois temps ont réussi. */
+int bot_reprise(void);
 
 /* Résultat d'une commande dont le CSW a été lu et reconnu valide (BOT §6.3). */
 struct bot_resultat {

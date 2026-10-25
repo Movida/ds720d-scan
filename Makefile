@@ -46,14 +46,18 @@ out\bot.obj: src\bot.c src\bot.h src\peripherique.h src\trace.h
 	@if not exist out mkdir out
 	cl $(CFLAGS) /c /Fo$@ src\bot.c
 
-out\ds720d.obj: src\ds720d.c src\bot.h src\peripherique.h src\trace.h
+out\ds720d.obj: src\ds720d.c src\bot.h src\peripherique.h src\trace.h src\tunnel.h
 	@if not exist out mkdir out
 	cl $(CFLAGS) /c /Fo$@ src\ds720d.c
 
+out\tunnel.obj: src\tunnel.c src\tunnel.h src\bot.h
+	@if not exist out mkdir out
+	cl $(CFLAGS) /c /Fo$@ src\tunnel.c
+
 # winusb.lib : fonctions WinUsb_* ; setupapi.lib : recherche du scanner (SetupDi*) ;
 # cfgmgr32.lib : état réel de l'appareil (CM_Get_DevNode_Status). Toutes viennent du Windows SDK.
-out\ds720d.exe: out\ds720d.obj out\bot.obj out\peripherique.obj out\trace.obj
-	link $(LDFLAGS) /OUT:$@ out\ds720d.obj out\bot.obj out\peripherique.obj out\trace.obj winusb.lib setupapi.lib cfgmgr32.lib
+out\ds720d.exe: out\ds720d.obj out\bot.obj out\tunnel.obj out\peripherique.obj out\trace.obj
+	link $(LDFLAGS) /OUT:$@ out\ds720d.obj out\bot.obj out\tunnel.obj out\peripherique.obj out\trace.obj winusb.lib setupapi.lib cfgmgr32.lib
 
 out\essai_trace.obj: src\essai_trace.c src\trace.h
 	@if not exist out mkdir out

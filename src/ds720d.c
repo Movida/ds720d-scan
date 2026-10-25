@@ -5,15 +5,20 @@
  *   ds720d descripteurs [--trace FICHIER]
  *   ds720d lun [--trace FICHIER]
  *   ds720d inquiry [--trace FICHIER]
+ *   ds720d etat [--trace FICHIER]
  *
  * Chaque commande refait les précédentes, dans l'ordre où Windows énumère le
- * scanner (1b) : descripteurs, GET_MAX_LUN, puis INQUIRY. Pourquoi enchaîner plutôt
- * qu'isoler chaque requête : GET_MAX_LUN a besoin du numéro d'interface lu dans
- * les descripteurs, et la trace se compare alors d'un bloc à la référence.
+ * scanner (1b) : descripteurs, GET_MAX_LUN, puis INQUIRY ; « etat » y ajoute la
+ * prise de contact du logiciel Brother par le tunnel 0xC5, en lecture seule.
+ * Pourquoi enchaîner plutôt qu'isoler chaque requête : GET_MAX_LUN a besoin du
+ * numéro d'interface lu dans les descripteurs, et la trace se compare alors d'un
+ * bloc à la référence.
  *
  * Règle du projet : chaque requête envoyée cite sa source, section de spec et
- * trame de la capture de référence où le pilote Windows l'envoie lui-même.
- * Rien n'est envoyé qui n'ait été observé dans 1b-enumeration.pcap.
+ * trame de la capture de référence où le pilote Windows ou Brother l'envoie
+ * lui-même. Rien n'est envoyé qui n'ait été observé dans 1b-enumeration.pcap,
+ * sauf la Reset Recovery de bot.c, documentée par la spec Bulk-Only (BOT §5.3.4)
+ * et réservée aux erreurs de transport.
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -24,6 +29,7 @@
 #include "bot.h"
 #include "peripherique.h"
 #include "trace.h"
+#include "tunnel.h"
 
 /* Ce que l'on retient des descripteurs pour la suite. */
 static struct {
@@ -204,9 +210,60 @@ static int envoyer_inquiry(void)
     return 0;
 }
 
+/* Prise de contact du logiciel Brother avec le scanner, rejouée telle quelle :
+ * 1b, trames 20841 à 20959, juste après l'énumération par Windows. Que des
+ * lectures par le tunnel 0xC5 (docs/protocole.md §2) : la signature « NOVA »
+ * deux fois, des sondages d'état, puis l'identifiant fabricant et l'identifiant
+ * produit, chacun précédé de son en-tête. Rien n'y modifie l'état du scanner.
+ *
+ * Pourquoi rejouer aussi les sondages, dont on ignore le sens : le but est
+ * qu'une capture de notre passage se superpose ligne à ligne à celle du pilote
+ * Brother ; en ne gardant que les lectures « utiles », on comparerait une
+ * séquence que le scanner n'a jamais vue. */
+static const struct {
+    uint8_t selecteur[3];
+    uint32_t lg;
+    unsigned trame; /* trame du CBW dans 1b */
+} prise_de_contact[] = {
+    {{0xFF, 0x02, 0x00}, 4, 20841},  {{0xFF, 0x02, 0x00}, 4, 20848},  {{0xFF, 0x04, 0x00}, 16, 20854},
+    {{0xFF, 0x03, 0x00}, 16, 20860}, {{0xFF, 0x03, 0x00}, 16, 20866}, {{0xFF, 0x05, 0x00}, 16, 20872},
+    {{0x02, 0x01, 0x03}, 2, 20880},  {{0xFF, 0x04, 0x00}, 16, 20886}, {{0x02, 0x02, 0x03}, 2, 20893},
+    {{0xFF, 0x04, 0x00}, 16, 20899}, {{0xFF, 0x06, 0x00}, 16, 20905}, {{0xFF, 0x04, 0x00}, 16, 20911},
+    {{0xFF, 0x03, 0x00}, 16, 20917}, {{0xFF, 0x03, 0x00}, 16, 20923}, {{0xFF, 0x05, 0x00}, 16, 20929},
+    {{0x02, 0x01, 0x04}, 2, 20935},  {{0xFF, 0x04, 0x00}, 16, 20941}, {{0x02, 0x02, 0x04}, 2, 20950},
+    {{0xFF, 0x04, 0x00}, 16, 20956},
+};
+
+static int lire_etat(void)
+{
+    uint8_t d[16];
+    for (size_t i = 0; i < sizeof prise_de_contact / sizeof prise_de_contact[0]; i++) {
+        const uint8_t *s = prise_de_contact[i].selecteur;
+        if (tunnel_lire(s, d, prise_de_contact[i].lg) != 0) {
+            fprintf(stderr, "prise de contact interrompue (1b trame %u)\n", prise_de_contact[i].trame);
+            return -1;
+        }
+        /* Contrôles des réponses dont le sens est établi (protocole.md §2). */
+        if (s[0] == 0xFF && s[1] == 0x02 && memcmp(d, "NOVA", 4) != 0) {
+            fprintf(stderr, "signature inattendue : %02x %02x %02x %02x\n", d[0], d[1], d[2], d[3]);
+            return -1;
+        }
+        if (s[0] == 0x02 && s[1] == 0x02) {
+            unsigned attendu = s[2] == 0x03 ? DS720D_VID : DS720D_PID;
+            if ((unsigned)(d[0] << 8 | d[1]) != attendu) {
+                fprintf(stderr, "identifiant 0x%02X%02X au lieu de 0x%04X\n", d[0], d[1], attendu);
+                return -1;
+            }
+        }
+    }
+    trace_note("prise de contact par 0xC5 : signature NOVA, identifiants 0x%04X et 0x%04X", DS720D_VID,
+               DS720D_PID);
+    return 0;
+}
+
 static void usage(void)
 {
-    fprintf(stderr, "usage : ds720d descripteurs|lun|inquiry [--trace FICHIER]\n");
+    fprintf(stderr, "usage : ds720d descripteurs|lun|inquiry|etat [--trace FICHIER]\n");
 }
 
 int main(int argc, char **argv)
@@ -224,7 +281,8 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    /* Niveau atteint par la commande : 1 descripteurs, 2 GET_MAX_LUN, 3 INQUIRY. */
+    /* Niveau atteint par la commande : 1 descripteurs, 2 GET_MAX_LUN, 3 INQUIRY,
+     * 4 prise de contact par 0xC5. */
     int niveau = 0;
     if (commande && strcmp(commande, "descripteurs") == 0)
         niveau = 1;
@@ -232,6 +290,8 @@ int main(int argc, char **argv)
         niveau = 2;
     else if (commande && strcmp(commande, "inquiry") == 0)
         niveau = 3;
+    else if (commande && strcmp(commande, "etat") == 0)
+        niveau = 4;
     if (!niveau) {
         usage();
         return 2;
@@ -249,9 +309,11 @@ int main(int argc, char **argv)
             trace_note("plus haut LUN : %u", scanner.max_lun);
     }
     if (r == 0 && niveau >= 3) {
-        bot_init(scanner.ep_in, scanner.ep_out);
+        bot_init(scanner.interface, scanner.ep_in, scanner.ep_out);
         r = envoyer_inquiry();
     }
+    if (r == 0 && niveau >= 4)
+        r = lire_etat();
     periph_fermer();
     trace_fermer();
     return r == 0 ? 0 : 1;

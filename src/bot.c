@@ -6,8 +6,19 @@
  * de Windows le cacherait). Les 31 octets du CBW sont posés un par un, dans
  * l'ordre de BOT §5.1, table 5.1.
  *
- * Seules les commandes entrantes existent pour l'instant (INQUIRY) : on n'ajoute
- * le sens sortant que quand une commande observée en aura besoin.
+ * Seules les commandes entrantes existent pour l'instant (INQUIRY, lectures du
+ * tunnel 0xC5) : on n'ajoute le sens sortant que quand une commande observée en
+ * aura besoin.
+ *
+ * Reprise sur erreur (étape 3c), selon BOT §5.3 et §6.7 :
+ *   - STALL pendant les données : on débloque l'endpoint IN et on lit le CSW
+ *     quand même (BOT §6.7.2) ;
+ *   - STALL à la lecture du CSW : on débloque et on réessaie une fois (BOT §5.3.3,
+ *     figure 2) ;
+ *   - CBW refusé, CSW invalide ou non significatif, erreur de phase, appareil
+ *     muet : Reset Recovery (BOT §5.3.4), puis la commande échoue.
+ * Aucune de ces situations n'apparaît dans les captures du pilote Brother : la
+ * reprise ne s'appuie que sur la spec (CLAUDE.md : commande documentée).
  */
 #include "bot.h"
 #include "peripherique.h"
@@ -24,7 +35,7 @@
 #define LG_CBW 31
 #define LG_CSW 13
 
-static uint8_t ep_in, ep_out;
+static uint8_t ep_in, ep_out, interface_bot;
 
 /* dCBWTag : valeur libre que l'appareil recopie dans le CSW (BOT §5.1), pour
  * associer chaque CSW à son CBW. Windows y met l'adresse de l'IRP (le tag
@@ -43,6 +54,8 @@ static uint32_t prochain_tag;
  * ne suffit pas, une erreur de copie de CDB à l'étape 3 doit être arrêtée ici. */
 static const uint8_t opcodes_permis[] = {
     0x12, /* INQUIRY, 1b trame 19225 */
+    0xC5, /* tunnel vendeur, 1b trame 20841, 2a trame 772 ; les sélecteurs permis
+           * sont filtrés à leur tour par tunnel.c */
 };
 
 static int opcode_permis(uint8_t op)
@@ -66,15 +79,55 @@ static uint32_t le32(const uint8_t *p)
     return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
-void bot_init(uint8_t in, uint8_t out)
+void bot_init(uint8_t interface, uint8_t in, uint8_t out)
 {
     LARGE_INTEGER t;
+    interface_bot = interface;
     ep_in = in;
     ep_out = out;
     /* Le compteur de performances change à chaque exécution : bon point de départ
      * pour les tags, sans prétention d'aléa. */
     QueryPerformanceCounter(&t);
     prochain_tag = (uint32_t)t.QuadPart;
+}
+
+/* WinUSB rend ERROR_GEN_FAILURE quand l'appareil répond par un STALL (le code
+ * USBD_STATUS_STALL_PID du pilote de bus, traduit en Win32). */
+static int est_stall(unsigned long erreur) { return erreur == ERROR_GEN_FAILURE; }
+
+int bot_reprise(void)
+{
+    /* Reset Recovery, BOT §5.3.4, trois temps dans cet ordre.
+     * (a) Bulk-Only Mass Storage Reset, requête de classe (BOT §3.1) :
+     *     bmRequestType 0x21 (hôte vers appareil, classe, destinataire l'interface),
+     *     bRequest 0xFF, wValue 0, wIndex numéro d'interface, wLength 0.
+     *     L'appareil se remet prêt à recevoir un CBW, sans toucher à ses données. */
+    uint8_t s[8] = {0x21, 0xFF, 0x00, 0x00, interface_bot, 0x00, 0x00, 0x00};
+    int r = 0;
+    trace_note("Reset Recovery (BOT §5.3.4)");
+    if (periph_controle(s, NULL) < 0)
+        r = -1;
+    /* (b) puis (c) : Clear Feature HALT sur bulk IN, puis sur bulk OUT. On les
+     * tente même si (a) a échoué : c'est ce qui reste pour débloquer le transport. */
+    if (periph_debloquer(ep_in) != 0)
+        r = -1;
+    if (periph_debloquer(ep_out) != 0)
+        r = -1;
+    if (r)
+        fprintf(stderr, "Reset Recovery incomplète : débrancher et rebrancher le scanner\n");
+    return r;
+}
+
+/* Lit le CSW ; sur un STALL, débloque l'endpoint et réessaie une seule fois
+ * (BOT §5.3.3 et figure 2 « Status Transport Flow »). Renvoie le nombre d'octets
+ * lus, ou -1. */
+static long lire_csw(uint8_t csw[LG_CSW])
+{
+    unsigned long erreur = 0;
+    long n = periph_bulk_lire(ep_in, csw, LG_CSW, &erreur);
+    if (n < 0 && est_stall(erreur) && periph_debloquer(ep_in) == 0)
+        n = periph_bulk_lire(ep_in, csw, LG_CSW, NULL);
+    return n;
 }
 
 int bot_commande_in(uint8_t lun, const uint8_t *cdb, uint8_t lg_cdb,
@@ -102,40 +155,51 @@ int bot_commande_in(uint8_t lun, const uint8_t *cdb, uint8_t lg_cdb,
 
     trace_cbw(cbw);
     if (periph_bulk_ecrire(ep_out, cbw, LG_CBW, NULL) != LG_CBW) {
+        /* CBW refusé (STALL de l'endpoint OUT) ou perdu : BOT §6.6.1 demande une
+         * Reset Recovery avant toute nouvelle commande. */
         fprintf(stderr, "envoi du CBW impossible\n");
+        bot_reprise();
         return -1;
     }
 
-    /* 2. Données. Un STALL ici serait légal (BOT §6.7.2 : l'appareil refuse de
-     * fournir plus de données) ; l'hôte devrait alors effacer le blocage de
-     * l'endpoint puis lire le CSW. On ne le fait pas encore : on s'arrête et on
-     * le dit. Un rebranchement du scanner remet ses endpoints à zéro. */
+    /* 2. Données. Un STALL ici est légal (BOT §6.7.2 : l'appareil a moins à
+     * envoyer que demandé, ou refuse la commande) : on débloque l'endpoint et on
+     * passe au CSW, qui dira le statut et le résidu. Tout autre échec (délai
+     * dépassé, câble) laisse le transport dans un état inconnu : Reset Recovery. */
     r->recus = 0;
     if (lg) {
-        n = periph_bulk_lire(ep_in, donnees, lg, NULL);
-        if (n < 0) {
-            fprintf(stderr, "lecture des données impossible (STALL probable), arrêt\n");
+        unsigned long erreur = 0;
+        n = periph_bulk_lire(ep_in, donnees, lg, &erreur);
+        if (n < 0 && !(est_stall(erreur) && periph_debloquer(ep_in) == 0)) {
+            fprintf(stderr, "lecture des données impossible (Win32=%lu), arrêt\n", erreur);
+            bot_reprise();
             return -1;
         }
-        r->recus = (size_t)n;
-        trace_data_in(donnees, r->recus);
+        if (n > 0) {
+            r->recus = (size_t)n;
+            trace_data_in(donnees, r->recus);
+        }
     }
 
     /* 3. CSW, BOT §5.2, table 5.2 ; validité selon BOT §6.3.1 : 13 octets, la
-     * signature 'USBS' et le tag du CBW. */
-    n = periph_bulk_lire(ep_in, csw, LG_CSW, NULL);
+     * signature 'USBS' et le tag du CBW. Un CSW invalide impose une Reset
+     * Recovery (BOT §5.3.3). */
+    n = lire_csw(csw);
     if (n < 0) {
         fprintf(stderr, "lecture du CSW impossible, arrêt\n");
+        bot_reprise();
         return -1;
     }
     if (n != LG_CSW) {
         trace_data_in(csw, (size_t)n);
         fprintf(stderr, "CSW de %ld octets au lieu de 13 : invalide (BOT §6.3.1)\n", n);
+        bot_reprise();
         return -1;
     }
     trace_csw(csw);
     if (le32(csw) != SIGNATURE_CSW || le32(csw + 4) != tag) {
         fprintf(stderr, "CSW invalide : signature ou tag faux (BOT §6.3.1)\n");
+        bot_reprise();
         return -1;
     }
     r->residu = le32(csw + 8); /* dCSWDataResidue */
@@ -146,12 +210,13 @@ int bot_commande_in(uint8_t lun, const uint8_t *cdb, uint8_t lg_cdb,
     if (r->statut > 2 || r->residu > lg) {
         fprintf(stderr, "CSW non significatif : statut %u, résidu %u pour %u attendus (BOT §6.3.2)\n",
                 r->statut, r->residu, lg);
+        bot_reprise();
         return -1;
     }
     if (r->statut == 2) {
-        /* Erreur de phase : l'appareil exige une Reset Recovery (BOT §5.3.4), que
-         * ce module ne fait pas encore. Rebrancher le scanner en tient lieu. */
-        fprintf(stderr, "CSW : erreur de phase, Reset Recovery nécessaire (BOT §5.3.4), arrêt\n");
+        /* Erreur de phase : l'appareil exige une Reset Recovery (BOT §5.3.4). */
+        fprintf(stderr, "CSW : erreur de phase, Reset Recovery (BOT §5.3.4)\n");
+        bot_reprise();
         return -1;
     }
     return 0;

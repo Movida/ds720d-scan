@@ -11,7 +11,7 @@ Pilote écrit à la main pour le scanner USB **Brother DS-720D** (`VID_04F9&PID_
 - Phase d'apprentissage d'abord, en espace utilisateur sur **WinUSB** : on apprend le protocole sans risquer d'écran bleu. Passer le scanner sous WinUSB coupe le logiciel Brother : toutes les captures de référence se font avant.
 - Aucune bibliothèque qui fait le travail à notre place : ni SANE, ni TWAIN/WIA, ni pilote Brother, ni libusb, ni pyshark/scapy.
 - Niveau le plus bas partout : descripteurs, endpoints, URB, transferts bulk, CBW/CSW écrits octet par octet, commandes SCSI encapsulées.
-- Code C (`src/`) : `peripherique.c` (WinUSB : recherche par SetupAPI, transferts de contrôle et bulk), `bot.c` (transport Bulk-Only, CBW et CSW), `trace.c` (trace au format commun), `ds720d.c` (le programme). Construction : `construire.cmd` (MSVC des Build Tools 2022 et Windows SDK 10.0.26100, `nmake` sur le `Makefile`), sorties dans `out/`, compilation en `/W4 /WX`.
+- Code C (`src/`) : `peripherique.c` (WinUSB : recherche par SetupAPI, transferts de contrôle et bulk), `bot.c` (transport Bulk-Only, CBW et CSW, Reset Recovery), `tunnel.c` (commande vendeur 0xC5, sélecteurs observés seulement), `trace.c` (trace au format commun), `ds720d.c` (le programme). Construction : `construire.cmd` (MSVC des Build Tools 2022 et Windows SDK 10.0.26100, `nmake` sur le `Makefile`), sorties dans `out/`, compilation en `/W4 /WX`.
 - Depuis l'étape 2, le scanner est sous **WinUSB** (classe USBDevice), posé par `out\bascule_winusb.exe --oui` en admin ; retour au pilote Brother par deux commandes `pnputil` : [docs/winusb.md](docs/winusb.md). `ds720d.exe` refuse d'ouvrir le scanner s'il n'est pas sous WinUSB.
 
 ## Sources qui font foi
