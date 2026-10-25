@@ -1,0 +1,261 @@
+# Courbe de tons du gris du pilote Brother : valeur brute (plan vert), valeur rendue, origine, effectif.
+# Étape 4c. Produit par : py banc/courbe_tons.py combiner sur les mesures de 1e-gris-300-recto-twain-3,
+# 1e-gris-300-recto-verso (4 faces) et 1e-gris-600-recto (docs/protocole.md §5). « ajusté » : hors plage mesurée,
+# prolongé par la loi de puissance ci-dessous.
+# loi de puissance ajustée : 255 * (v / 255) ^ 0.5544
+  0   0 ajusté 0
+  1  12 ajusté 0
+  2  17 ajusté 0
+  3  22 ajusté 0
+  4  25 ajusté 0
+  5  29 ajusté 0
+  6  32 ajusté 0
+  7  35 ajusté 0
+  8  37 ajusté 0
+  9  40 ajusté 0
+ 10  42 ajusté 0
+ 11  45 ajusté 0
+ 12  47 ajusté 0
+ 13  49 ajusté 0
+ 14  51 ajusté 0
+ 15  53 ajusté 0
+ 16  55 ajusté 0
+ 17  57 ajusté 0
+ 18  59 ajusté 0
+ 19  60 ajusté 0
+ 20  62 ajusté 0
+ 21  64 ajusté 0
+ 22  66 ajusté 0
+ 23  67 ajusté 0
+ 24  69 ajusté 0
+ 25  70 ajusté 0
+ 26  72 ajusté 0
+ 27  73 ajusté 0
+ 28  75 ajusté 0
+ 29  76 ajusté 0
+ 30  78 ajusté 0
+ 31  79 ajusté 0
+ 32  81 ajusté 0
+ 33  82 ajusté 0
+ 34  83 ajusté 0
+ 35  85 ajusté 0
+ 36  86 ajusté 0
+ 37  87 ajusté 0
+ 38  89 ajusté 0
+ 39  90 ajusté 0
+ 40  91 ajusté 0
+ 41  93 ajusté 0
+ 42  94 ajusté 0
+ 43  95 ajusté 0
+ 44  96 ajusté 0
+ 45  97 mesuré 2935
+ 46  98 mesuré 11467
+ 47 100 mesuré 11526
+ 48 101 mesuré 11168
+ 49 102 mesuré 10239
+ 50 103 mesuré 11185
+ 51 104 mesuré 10896
+ 52 105 mesuré 9659
+ 53 107 mesuré 11823
+ 54 108 mesuré 9639
+ 55 109 mesuré 9982
+ 56 110 mesuré 10997
+ 57 111 mesuré 9584
+ 58 112 mesuré 9828
+ 59 113 mesuré 10519
+ 60 114 mesuré 9979
+ 61 115 mesuré 10331
+ 62 116 mesuré 9816
+ 63 117 mesuré 10751
+ 64 118 mesuré 9726
+ 65 119 mesuré 10713
+ 66 120 mesuré 10478
+ 67 121 mesuré 10094
+ 68 122 mesuré 9543
+ 69 123 mesuré 10984
+ 70 124 mesuré 12064
+ 71 125 mesuré 11093
+ 72 126 mesuré 9244
+ 73 127 mesuré 11081
+ 74 128 mesuré 10042
+ 75 129 mesuré 12466
+ 76 130 mesuré 11632
+ 77 131 mesuré 10406
+ 78 132 mesuré 11727
+ 79 133 mesuré 12514
+ 80 134 mesuré 10676
+ 81 135 mesuré 13235
+ 82 136 mesuré 12109
+ 83 137 mesuré 11573
+ 84 138 mesuré 13663
+ 85 139 mesuré 13611
+ 86 139 mesuré 12172
+ 87 140 mesuré 12662
+ 88 141 mesuré 13303
+ 89 142 mesuré 12939
+ 90 143 mesuré 14095
+ 91 144 mesuré 14548
+ 92 145 mesuré 13763
+ 93 146 mesuré 14200
+ 94 146 mesuré 14949
+ 95 147 mesuré 13889
+ 96 148 mesuré 16174
+ 97 150 mesuré 14661
+ 98 150 mesuré 14663
+ 99 151 mesuré 15535
+100 152 mesuré 16026
+101 152 mesuré 15993
+102 154 mesuré 15369
+103 155 mesuré 16829
+104 155 mesuré 15151
+105 156 mesuré 16017
+106 157 mesuré 18255
+107 158 mesuré 20556
+108 159 mesuré 16713
+109 160 mesuré 14706
+110 161 mesuré 18185
+111 161 mesuré 17288
+112 162 mesuré 20088
+113 163 mesuré 18559
+114 164 mesuré 19080
+115 165 mesuré 21484
+116 165 mesuré 19879
+117 166 mesuré 21924
+118 167 mesuré 26244
+119 168 mesuré 24829
+120 169 mesuré 28001
+121 169 mesuré 26667
+122 170 mesuré 30929
+123 171 mesuré 38622
+124 172 mesuré 38971
+125 172 mesuré 43687
+126 173 mesuré 60453
+127 174 mesuré 60385
+128 175 mesuré 75455
+129 175 mesuré 89862
+130 176 mesuré 118514
+131 177 mesuré 130778
+132 178 mesuré 175898
+133 178 mesuré 192998
+134 179 mesuré 184526
+135 180 mesuré 305725
+136 181 mesuré 336681
+137 181 mesuré 293246
+138 182 mesuré 479012
+139 183 mesuré 346870
+140 183 mesuré 532410
+141 184 mesuré 585525
+142 185 mesuré 605640
+143 186 mesuré 738825
+144 186 mesuré 556542
+145 187 mesuré 858598
+146 188 mesuré 813438
+147 188 mesuré 829861
+148 189 mesuré 878468
+149 190 mesuré 719810
+150 191 mesuré 1063745
+151 191 mesuré 869609
+152 192 mesuré 869488
+153 193 mesuré 805514
+154 193 mesuré 806155
+155 194 mesuré 676019
+156 195 mesuré 619724
+157 195 mesuré 555112
+158 196 mesuré 474384
+159 197 mesuré 423956
+160 198 mesuré 295818
+161 198 mesuré 240084
+162 199 mesuré 194016
+163 200 mesuré 152000
+164 200 mesuré 114306
+165 201 mesuré 81407
+166 201 mesuré 55785
+167 202 mesuré 37134
+168 202 mesuré 34452
+169 204 mesuré 19203
+170 204 mesuré 15343
+171 205 mesuré 11237
+172 206 mesuré 7629
+173 206 mesuré 5606
+174 207 mesuré 3785
+175 208 mesuré 2926
+176 208 mesuré 2155
+177 209 mesuré 1627
+178 209 ajusté 0
+179 210 ajusté 0
+180 210 ajusté 0
+181 211 ajusté 0
+182 212 ajusté 0
+183 212 ajusté 0
+184 213 ajusté 0
+185 213 ajusté 0
+186 214 ajusté 0
+187 215 ajusté 0
+188 215 ajusté 0
+189 216 ajusté 0
+190 217 ajusté 0
+191 217 ajusté 0
+192 218 ajusté 0
+193 219 ajusté 0
+194 219 ajusté 0
+195 220 ajusté 0
+196 220 ajusté 0
+197 221 ajusté 0
+198 222 ajusté 0
+199 222 ajusté 0
+200 223 ajusté 0
+201 223 ajusté 0
+202 224 ajusté 0
+203 225 ajusté 0
+204 225 ajusté 0
+205 226 ajusté 0
+206 227 ajusté 0
+207 227 ajusté 0
+208 228 ajusté 0
+209 228 ajusté 0
+210 229 ajusté 0
+211 230 ajusté 0
+212 230 ajusté 0
+213 231 ajusté 0
+214 231 ajusté 0
+215 232 ajusté 0
+216 233 ajusté 0
+217 233 ajusté 0
+218 234 ajusté 0
+219 234 ajusté 0
+220 235 ajusté 0
+221 236 ajusté 0
+222 236 ajusté 0
+223 237 ajusté 0
+224 237 ajusté 0
+225 238 ajusté 0
+226 238 ajusté 0
+227 239 ajusté 0
+228 240 ajusté 0
+229 240 ajusté 0
+230 241 ajusté 0
+231 241 ajusté 0
+232 242 ajusté 0
+233 243 ajusté 0
+234 243 ajusté 0
+235 244 ajusté 0
+236 244 ajusté 0
+237 245 ajusté 0
+238 245 ajusté 0
+239 246 ajusté 0
+240 247 ajusté 0
+241 247 ajusté 0
+242 248 ajusté 0
+243 248 ajusté 0
+244 249 ajusté 0
+245 249 ajusté 0
+246 250 ajusté 0
+247 251 ajusté 0
+248 251 ajusté 0
+249 252 ajusté 0
+250 252 ajusté 0
+251 253 ajusté 0
+252 253 ajusté 0
+253 254 ajusté 0
+254 254 ajusté 0
+255 255 ajusté 0
