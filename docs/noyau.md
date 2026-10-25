@@ -118,7 +118,7 @@ Pièges rencontrés :
 
 Contrôle croisé : concordance parfaite entre nos traces de la VM et la capture faite sur Medabot (18, 25 et 105 lignes), et entre nos traces de la VM et celles de Medabot aux étapes 2 et 3. Le passage par VMware est transparent pour le protocole.
 
-Constat utile pour l'étape 6 : **USBPcap sur Medabot voit le trafic que la VM échange avec le scanner**, avec les mêmes adresses d'endpoints et les mêmes CBW. Le pilote noyau dans la VM pourra donc être contrôlé de l'extérieur, par le même banc qu'aux étapes 2 à 4, en plus de ses traces WPP. Réserve : la concordance n'est vérifiée que sur de petits transferts ; pour les lectures d'image de 64 Kio, VMware pourrait découper ou regrouper les URB côté hôte, à vérifier au premier scan depuis la VM.
+Constat utile pour l'étape 6 : **USBPcap sur Medabot voit le trafic que la VM échange avec le scanner**, avec les mêmes adresses d'endpoints et les mêmes CBW. Le pilote noyau dans la VM pourra donc être contrôlé de l'extérieur, par le même banc qu'aux étapes 2 à 4, en plus de ses traces WPP. Réserve : la concordance n'est vérifiée que sur de petits transferts ; pour les lectures d'image de 64 Kio, VMware pourrait découper ou regrouper les URB côté hôte, à vérifier au premier scan depuis la VM. **Vérifié en 6g** : VMware découpe chaque lecture de 64 Kio en deux URB côté hôte (36 864 + 28 672 o) ; `analyse_capture.py --recoller` les rassemble ([pilote.md](pilote.md), 6g).
 
 Le scanner a été rattaché par VMware au contrôleur xHCI virtuel (journal de la VM : `virtPath:usb_xhci:5`).
 

@@ -578,10 +578,19 @@ class Decodeur:
     """Suit l'état d'un appareil (contrôles en vol, commande BOT en cours) et
     transforme les paquets USBPcap en lignes du format de trace commun."""
 
-    def __init__(self, octets_max, masques, montrer_serie=False):
+    def __init__(self, octets_max, masques, montrer_serie=False, recoller=False):
         self.octets_max = octets_max
         self.masques = masques
         self.montrer_serie = montrer_serie
+        # Étape 6g : quand la VM passe par VMware, l'hôte découpe une phase de
+        # données de 64 Kio en plusieurs URB (36 864 + 28 672 o, capture
+        # 6g-recto) ; USBPcap, sur l'hôte, voit les morceaux. Avec recoller,
+        # les données entrantes d'une même commande sont rassemblées en une
+        # seule ligne DATA-IN, comme les voit le pilote de la VM (un seul URB),
+        # au numéro de trame du premier morceau. Sans effet sur une capture où
+        # chaque phase tient en un URB (toutes celles de Medabot).
+        self.recoller = recoller
+        self.attente = {}      # adresse -> morceaux [(paquet, octets)] de la phase de données en cours
         self.i_serie = {}      # adresse -> index du descripteur STRING du numéro de série
         self.setups = {}       # irp_id -> paquet SETUP (pour décoder la réponse)
         self.cbw = {}          # adresse -> (tag, opcode, CDB) de la commande en cours
@@ -654,6 +663,8 @@ class Decodeur:
         if not entrant and not p.retour:
             # Soumission OUT : les octets partent vers le scanner.
             if len(d) == CBW.size and d[:4] == b"USBC":
+                # Morceaux en attente d'une commande sans CSW : à écrire avant.
+                avant = self.vider(p.adresse)
                 _, tag, lg, flags, lun, lg_cdb, cdb = CBW.unpack(d)
                 cdb = cdb[:lg_cdb]
                 op = cdb[0] if cdb else -1
@@ -661,12 +672,12 @@ class Decodeur:
                 sens = "IN" if flags & 0x80 else "OUT"
                 self.stats[("CBW", op, lg, sens)] += 1
                 if op in self.masques:
-                    return []
+                    return avant
                 lignes = [self.ligne(p, "CBW", f"tag=0x{tag:08X} lun={lun} {sens} {lg} o  "
                                                f"CDB[{lg_cdb}]={cdb.hex(' ')}  {nom_opcode(op)}")]
                 if op in (OP_TUNNEL, OP_LECTURE_TAMPON):
                     lignes += [SUITE + l for l in decrire_cdb_vendeur(cdb)]
-                return lignes
+                return avant + lignes
             if d:
                 self.stats["data-out"] += 1
                 cour = self.cbw.get(p.adresse)
@@ -690,36 +701,55 @@ class Decodeur:
             # Complétion IN : les octets arrivent du scanner.
             cour = self.cbw.get(p.adresse)
             if len(d) == CSW.size and d[:4] == b"USBS":
+                avant = self.vider(p.adresse)
                 _, tag, residu, statut = CSW.unpack(d)
                 attendu = cour[0] if cour else None
                 masque = self.masque(p)
                 self.cbw.pop(p.adresse, None)
                 self.stats[("CSW", statut)] += 1
                 if masque:
-                    return []
+                    return avant
                 alerte = "" if tag == attendu else f"  !! tag inattendu (CBW 0x{attendu or 0:08X})"
-                return [self.ligne(p, "CSW", f"tag=0x{tag:08X} statut={statut} "
-                                             f"({STATUTS_CSW.get(statut, '?')}) résidu={residu}{alerte}")]
-            if cour:
-                self.volume_in[cour[1]] += p.longueur_donnees
-            self.stats["data-in"] += 1
-            if self.masque(p):
+                return avant + [self.ligne(p, "CSW", f"tag=0x{tag:08X} statut={statut} "
+                                                     f"({STATUTS_CSW.get(statut, '?')}) résidu={residu}{alerte}")]
+            if self.recoller:
+                self.attente.setdefault(p.adresse, []).append((p, d))
                 return []
-            tronque = f" (capturés {len(d)})" if p.tronque else ""
-            demande = int.from_bytes(cour[2][6:10], "big") if cour and len(cour[2]) == 16 else 0
-            if (cour and cour[1] == OP_TUNNEL and (p.longueur_donnees in (128, 165) or demande in (128, 165))
-                    and not self.montrer_serie):
-                # Réponses 0xC5 de 128 et 165 o, reçues ou demandées : INQUIRY emballé
-                # (12 … a5) et READ type 0x69 de 128 o, porteurs du numéro de série
-                # (1b, 1e-gris-300-recto). Même règle que contient_serie() dans src/trace.c.
-                return [self.ligne(p, "DATA-IN", f"{p.longueur_donnees} o{tronque}  "
-                                                 f"(numéro de série masqué, --serie)")]
-            lignes = [self.ligne(p, "DATA-IN", f"{p.longueur_donnees} o{tronque}  {hexa(d, self.octets_max)}")]
-            if cour:
-                lignes += [SUITE + l for l in decrire_reponse_scsi(cour[2], d)]
-                lignes += [SUITE + l for l in decrire_reponse_vendeur(cour[2], d)]
-            return lignes
+            return self.donnees_in(p, d, p.longueur_donnees, p.tronque)
         return []
+
+    def vider(self, adresse):
+        """Lignes de la phase de données entrante recollée en attente pour cette
+        adresse (option recoller), ou rien."""
+        morceaux = self.attente.pop(adresse, None)
+        if not morceaux:
+            return []
+        premier = morceaux[0][0]
+        return self.donnees_in(premier, b"".join(d for _, d in morceaux),
+                               sum(p.longueur_donnees for p, _ in morceaux), any(p.tronque for p, _ in morceaux))
+
+    def donnees_in(self, p, d, longueur, tronque_capture):
+        """Ligne DATA-IN (et son décodage) pour longueur octets reçus, dont d capturés."""
+        cour = self.cbw.get(p.adresse)
+        if cour:
+            self.volume_in[cour[1]] += longueur
+        self.stats["data-in"] += 1
+        if self.masque(p):
+            return []
+        tronque = f" (capturés {len(d)})" if tronque_capture else ""
+        demande = int.from_bytes(cour[2][6:10], "big") if cour and len(cour[2]) == 16 else 0
+        if (cour and cour[1] == OP_TUNNEL and (longueur in (128, 165) or demande in (128, 165))
+                and not self.montrer_serie):
+            # Réponses 0xC5 de 128 et 165 o, reçues ou demandées : INQUIRY emballé
+            # (12 … a5) et READ type 0x69 de 128 o, porteurs du numéro de série
+            # (1b, 1e-gris-300-recto). Même règle que contient_serie() dans src/trace.c.
+            return [self.ligne(p, "DATA-IN", f"{longueur} o{tronque}  "
+                                             f"(numéro de série masqué, --serie)")]
+        lignes = [self.ligne(p, "DATA-IN", f"{longueur} o{tronque}  {hexa(d, self.octets_max)}")]
+        if cour:
+            lignes += [SUITE + l for l in decrire_reponse_scsi(cour[2], d)]
+            lignes += [SUITE + l for l in decrire_reponse_vendeur(cour[2], d)]
+        return lignes
 
 
 def decrire_brut(p):
@@ -782,6 +812,9 @@ def main():
     ap.add_argument("--brut", action="store_true", help="en-têtes USBPcap bruts, sans décodage")
     ap.add_argument("--serie", action="store_true",
                     help="afficher le numéro de série de l'appareil (masqué par défaut)")
+    ap.add_argument("--recoller", action="store_true",
+                    help="rassembler en une ligne DATA-IN les morceaux d'une même phase de données "
+                         "(captures de la VM, que VMware découpe ; étape 6g)")
     args = ap.parse_args()
 
     # La console Windows n'est pas toujours en UTF-8 ; on l'impose pour les accents.
@@ -798,7 +831,7 @@ def main():
                 print(f"  --adresse {adr}   ({n} CBW)", file=sys.stderr)
             return 2
 
-    dec = Decodeur(args.octets, set(args.masquer), args.serie)
+    dec = Decodeur(args.octets, set(args.masquer), args.serie, args.recoller)
     par_adresse = Counter()
     print(f"# capture {args.capture}, adresse(s) {sorted(adresses)}")
     if not args.resume and not args.brut:
@@ -817,6 +850,11 @@ def main():
         lignes = dec.traiter(p)
         if not args.resume and trame.numero >= args.de and (args.a is None or trame.numero <= args.a):
             for l in lignes:
+                print(l)
+    # Morceaux restés en attente (capture arrêtée avant le CSW) : écrits quand même.
+    for adr in list(dec.attente):
+        for l in dec.vider(adr):
+            if not args.resume:
                 print(l)
 
     if args.resume:

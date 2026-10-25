@@ -203,3 +203,19 @@ Aucun code nouveau : `ds720d.c` et `tunnel.c` passent déjà par `client_noyau.c
 2. `ds720dk papier` sans feuille : « pas de feuille » ; 53 commandes, identiques à celles de 3d (`3d-trace-sans-2`), dont le dépôt de 0x08.
 3. `ds720dk papier` avec une feuille engagée : « feuille engagée », feuille non entraînée ; 187 commandes, identiques à celles de 3d (`3d-trace-avec`), dont six dépôts (0x08 et READ 0xA0).
 4. Capture contre traces de `ds720dk.exe` : concordance parfaite, tags compris (105, 212 et 742 lignes, les mêmes nombres qu'en 3c et 3d). Contre les traces de WinUSB, seules diffèrent quelques réponses de sondage (`ff 03`, `ff 05`, octet 8), qui varient d'un passage à l'autre (docs/protocole.md §2) : les commandes ont été comparées seules, réponses écartées.
+
+### 6g : scan par le pilote (25/10)
+
+Aucun code nouveau dans le pilote ni dans l'outil : `ds720d.c` (boucle de lecture) et `tunnel.c` passent par `client_noyau.c`, la barrière connaît les dépôts du scan (accordés aux étapes 3 et 4) et les lectures 0xC3. Seul le banc change (ci-dessous). Vérifié dans la VM, sans élévation :
+1. **Recto 300 dpi** (`6g-recto`) : 16 blocs, 1 280 lignes, 6,4 s.
+2. **Recto-verso de deux feuilles** (`6g-rv`) : 188 blocs, quatre faces de 3 760 lignes, 38 s attente de la seconde feuille comprise.
+3. **600 dpi** (`6g-600`) : 89 blocs, 7 120 lignes, 21 s. Un premier essai s'était arrêté sur « pas de feuille » (feuille pas assez engagée) : rien n'a été scanné.
+Pour chacun : trace de `ds720dk.exe` identique à la capture recollée (21 994, 53 374 et 70 765 lignes, tags compris) ; `verif_blocs.py` : 0 écart ; brut identique, octet pour octet, aux blocs ou aux faces extraits de la capture ; suite des dépôts identique à celle des scans de `ds720d.exe` sous WinUSB (3g, 4e, 4f), répétitions de READ image repliées.
+
+Débit des lectures 0xC3, mesuré sur les captures : 26,3 Mo/s par notre pilote dans la VM (2,44 ms par lecture de 64 Kio en médiane), contre 29,0 Mo/s par WinUSB sur Medabot (2,24 ms, capture 3g). La durée d'un scan reste celle de la mécanique, environ 0,39 s par bloc dans les deux cas. `METHOD_BUFFERED` est donc gardé : la copie du tampon système ne se voit pas (§ 2).
+
+**Ce que VMware fait de nos lectures** (réserve de 5d levée) : notre pilote envoie un seul URB de 64 Kio, mais l'hôte le découpe en deux (36 864 + 28 672 o) ; USBPcap, sur Medabot, voit les deux morceaux. Le banc en tient compte :
+- `banc/analyse_capture.py --recoller` rassemble les données entrantes d'une même commande en une seule ligne DATA-IN, comme les voit le pilote ; sans effet sur les captures de Medabot (2a et 3g : sortie identique avec et sans l'option ; `contre_verif.py` sur 2a : 0 écart).
+- `banc/extrait_image.py` suit une lecture 0xC3 arrivée en plusieurs morceaux (toujours, sans option).
+
+Piège : les traces de `ds720dk.exe` ne mesurent pas la durée d'une commande (CBW, données et CSW y sont écrits au retour de l'IOCTL) ; le débit se mesure sur la capture.

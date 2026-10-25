@@ -110,7 +110,10 @@ def extraire(chemin, adresse, sorties):
             sorties.fichier(bloc[5], bloc[6]).write(d)
             bloc[2] += len(d)
             bloc[3] = lecture + len(d)
-            lecture = None
+            # Une même lecture peut arriver en plusieurs morceaux : dans la VM,
+            # VMware découpe côté hôte nos lectures de 64 Kio (étape 6g, capture
+            # 6g-recto). Le morceau suivant reprend là où celui-ci s'arrête.
+            lecture += len(d)
     if bloc:
         blocs.append(bloc)
     return blocs
