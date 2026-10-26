@@ -19,6 +19,10 @@
  * (ioctl.c), qui passent par la barrière des commandes observées
  * (src/permis.c), puis par le transport Bulk-Only du pilote (bot.c).
  *
+ * Étape 6i (relecture de fond) : un seul client à la fois, compté par le
+ * pilote (Ds720dOuverture, Ds720dFermeture) ; second descripteur
+ * CONFIGURATION revérifié.
+ *
  * Pourquoi un pilote PnP, alors que bonjour.sys (5f) était non-PnP : c'est le
  * gestionnaire PnP qui charge le pilote quand le scanner apparaît, appelle
  * EvtDriverDeviceAdd pour qu'on s'attache au-dessus de l'objet physique créé
@@ -86,6 +90,8 @@ EVT_WDF_DEVICE_RELEASE_HARDWARE Ds720dLibererMateriel;
 EVT_WDF_DEVICE_D0_ENTRY Ds720dEntreeD0;
 EVT_WDF_DEVICE_D0_EXIT Ds720dSortieD0;
 EVT_WDF_DEVICE_SURPRISE_REMOVAL Ds720dRetraitInopine;
+EVT_WDF_DEVICE_FILE_CREATE Ds720dOuverture;
+EVT_WDF_FILE_CLOSE Ds720dFermeture;
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT, DriverEntry)
@@ -93,6 +99,9 @@ EVT_WDF_DEVICE_SURPRISE_REMOVAL Ds720dRetraitInopine;
 #pragma alloc_text(PAGE, Ds720dPreparerMateriel)
 #pragma alloc_text(PAGE, Ds720dLibererMateriel)
 #pragma alloc_text(PAGE, Ds720dDecharge)
+/* Ouverture et fermeture : PASSIVE_LEVEL (wdfdevice.h, _IRQL_requires_max_). */
+#pragma alloc_text(PAGE, Ds720dOuverture)
+#pragma alloc_text(PAGE, Ds720dFermeture)
 #endif
 
 /* Nom lisible d'un état d'alimentation de KMDF (WDF_POWER_DEVICE_STATE,
@@ -163,6 +172,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 NTSTATUS Ds720dAjoutAppareil(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
 {
     WDF_PNPPOWER_EVENT_CALLBACKS pnp;
+    WDF_FILEOBJECT_CONFIG fichiers;
     WDF_OBJECT_ATTRIBUTES attributs;
     WDFDEVICE appareil;
     NTSTATUS statut;
@@ -180,13 +190,30 @@ NTSTATUS Ds720dAjoutAppareil(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
     WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnp);
 
     /* Accès depuis l'espace utilisateur (6e, docs/pilote.md § 2) :
-     *   - ouverture exclusive : un seul client à la fois ; deux outils
-     *     entrelaceraient leurs commandes dans le tunnel 0xC5 ;
+     *   - un seul client à la fois : deux outils entrelaceraient leurs
+     *     commandes dans le tunnel 0xC5. Le pilote compte lui-même les
+     *     ouvertures (Ds720dOuverture, Ds720dFermeture, plus bas) ;
      *   - FILE_DEVICE_SECURE_OPEN : la sécurité de l'appareil (posée par
      *     l'INF) vaut aussi pour tout nom ouvert « sous » lui, du genre
      *     \Device\…\quelquechose, que le gestionnaire d'E/S nous passerait
-     *     sinon sans contrôle. */
-    WdfDeviceInitSetExclusive(DeviceInit, TRUE);
+     *     sinon sans contrôle.
+     * Jusqu'en 6h, l'exclusivité était demandée par WdfDeviceInitSetExclusive.
+     * La doc WDK la dit sans effet pour un pilote de fonction : le
+     * gestionnaire d'E/S ne la vérifie que sur l'objet nommé de la pile, le
+     * PDO créé par le concentrateur, et « setting the exclusive flag for the
+     * FDO has no effect » (« Specifying Exclusive Access to Device Objects »).
+     * D'où la relecture de 6i. Or l'essai de 6i sur la version 6.5 montre une
+     * seconde ouverture refusée (ERROR_ACCESS_DENIED) par ce Windows (build
+     * 26300) : un comportement que la doc dément, sur lequel on ne s'appuie
+     * donc pas. Le comptage par le pilote, lui, est documenté
+     * (EvtDeviceFileCreate), tracé dans l'IFR, vérifié par essai_refus.c, et
+     * couvre les ouvertures relatives à un descripteur déjà ouvert, que le
+     * gestionnaire d'E/S laisse passer même pour un appareil exclusif (même
+     * page). Pas non plus la valeur Exclusive de l'INF, l'autre voie de cette
+     * page : elle refuserait avant notre code, sans trace, et notre comptage
+     * ne serait jamais exercé. Un seul mécanisme, donc. */
+    WDF_FILEOBJECT_CONFIG_INIT(&fichiers, Ds720dOuverture, Ds720dFermeture, WDF_NO_EVENT_CALLBACK);
+    WdfDeviceInitSetFileObjectConfig(DeviceInit, &fichiers, WDF_NO_OBJECT_ATTRIBUTES);
     WdfDeviceInitSetCharacteristics(DeviceInit, FILE_DEVICE_SECURE_OPEN, TRUE);
 
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributs, DS720D_APPAREIL);
@@ -271,8 +298,11 @@ static NTSTATUS Demarrer(WDFDEVICE appareil, DS720D_APPAREIL *a, UCHAR *d)
     statut = UsbControle(&a->usb, setup, d, &n);
     if (!NT_SUCCESS(statut))
         return statut;
-    if (n != total) {
-        Trace(TRACE_LEVEL_ERROR, TRACE_PNP, "CONFIGURATION complet : %lu octets au lieu de %u, arret", n, total);
+    /* Revérifié (relecture 6i) : le parcours qui suit et la pile USB lisent la
+     * configuration d'après son en-tête ; il doit être celui qu'on a lu
+     * d'abord, pas un autre que l'appareil rendrait cette fois. */
+    if (n != total || d[1] != USB_CONFIGURATION_DESCRIPTOR_TYPE || Le16(d + 2) != total) {
+        Trace(TRACE_LEVEL_ERROR, TRACE_PNP, "CONFIGURATION complet : %lu octets, total %u attendu, arret", n, total);
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
 
@@ -372,6 +402,54 @@ VOID Ds720dRetraitInopine(WDFDEVICE Device)
 {
     UNREFERENCED_PARAMETER(Device);
     Trace(TRACE_LEVEL_WARNING, TRACE_PNP, "EvtDeviceSurpriseRemoval : scanner debranche");
+}
+
+/*
+ * Un programme ouvre le scanner (CreateFile sur notre interface). Un seul à la
+ * fois (6i) : le premier devient titulaire, les suivants sont refusés jusqu'à
+ * ce qu'il ferme. Le refus est STATUS_SHARING_VIOLATION, que l'outil reçoit en
+ * ERROR_SHARING_VIOLATION (« utilisé par un autre processus ») : distinct de
+ * l'ERROR_ACCESS_DENIED de la barrière (ioctl.c) et des droits de l'INF.
+ * KMDF peut appeler ce rappel pour deux ouvertures en même temps : il ne
+ * passe par aucune file. D'où un compare-et-échange atomique : deux
+ * programmes ne peuvent pas devenir titulaires ensemble.
+ */
+VOID Ds720dOuverture(WDFDEVICE Device, WDFREQUEST Request, WDFFILEOBJECT FileObject)
+{
+    DS720D_APPAREIL *a = Ds720dAppareil(Device);
+    PUNICODE_STRING nom = WdfFileObjectGetFileName(FileObject);
+    NTSTATUS statut = STATUS_SUCCESS;
+
+    PAGED_CODE();
+    if (nom && nom->Length) {
+        /* Un nom « sous » l'appareil (\Device\…\x) : le pilote n'a pas
+         * d'espace de noms, rien à ouvrir là. */
+        Trace(TRACE_LEVEL_WARNING, TRACE_IOCTL, "ouverture d'un nom sous l'appareil refusee");
+        statut = STATUS_OBJECT_NAME_NOT_FOUND;
+    } else if (InterlockedCompareExchangePointer(&a->titulaire, FileObject, NULL) != NULL) {
+        Trace(TRACE_LEVEL_WARNING, TRACE_IOCTL, "seconde ouverture refusee : le scanner est deja tenu par un client");
+        statut = STATUS_SHARING_VIOLATION;
+    } else {
+        Trace(TRACE_LEVEL_INFORMATION, TRACE_IOCTL, "scanner ouvert par un client");
+    }
+    WdfRequestComplete(Request, statut);
+}
+
+/*
+ * Le titulaire a fermé. KMDF n'appelle ce rappel qu'une fois le dernier
+ * descripteur fermé et toutes ses requêtes terminées (doc WDK, EvtFileClose) :
+ * le suivant ne peut donc pas glisser une commande pendant la dernière du
+ * précédent. D'où ce rappel plutôt qu'EvtFileCleanup, appelé dès la fermeture
+ * du descripteur, même avec des requêtes encore en cours. La place n'est
+ * rendue que par son titulaire : une ouverture refusée ne la libère pas.
+ */
+VOID Ds720dFermeture(WDFFILEOBJECT FileObject)
+{
+    DS720D_APPAREIL *a = Ds720dAppareil(WdfFileObjectGetDevice(FileObject));
+
+    PAGED_CODE();
+    if (InterlockedCompareExchangePointer(&a->titulaire, NULL, FileObject) == FileObject)
+        Trace(TRACE_LEVEL_INFORMATION, TRACE_IOCTL, "scanner rendu par son client");
 }
 
 /* Plus aucun scanner n'utilise le pilote : l'image va quitter la mémoire. On

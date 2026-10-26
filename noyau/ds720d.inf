@@ -24,7 +24,7 @@ CatalogFile = ds720d.cat
 ; suite. A classement egal, Windows prend le paquet le plus recent, puis la
 ; version la plus haute : a monter a chaque nouvelle version installee, pour
 ; que la nouvelle l'emporte sur l'ancienne encore presente dans le magasin.
-DriverVer   = 10/25/2026,6.5.0.0
+DriverVer   = 10/25/2026,6.6.0.0
 ; Empeche un autre installateur de remplacer nos fichiers (doc WDK, PnpLockdown).
 PnpLockdown = 1
 

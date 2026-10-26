@@ -170,7 +170,7 @@ Détail dans [pilote.md](pilote.md), 6d.
 
 ## Retour arrière
 
-- **VM** : revenir à un instantané (`windows-propre`, `avant-debug`, `debug-pret`, `avant-test-signing`, `test-signing-pret`, puis ceux de l'étape 6 : `avant-6b`, `avant-6c`, `avant-6d`, `avant-6d-bis`…), ou supprimer la VM ; rien ne fuit vers Medabot. Après `windows-propre`, refaire `mountvol /N` avant tout passage du scanner.
+- **VM** : revenir à un instantané (`windows-propre`, `avant-debug`, `debug-pret`, `avant-test-signing`, `test-signing-pret`, puis ceux de l'étape 6 : `avant-6b`, `avant-6c`, `avant-6d-bis`, `avant-6e`, `avant-6i` ; pas `avant-6d`, terminé pendant une suspension de la VM), ou supprimer la VM ; rien ne fuit vers Medabot. Après `windows-propre`, refaire `mountvol /N` avant tout passage du scanner.
 - **Ce que l'étape 5 a changé sur Medabot**, et comment le défaire :
   - installations de 5b (VMware, WinDbg, WDK) : les désinstaller depuis les paramètres ;
   - règle de pare-feu de 5e : `Remove-NetFirewallRule -DisplayName "ds720d KDNET (VM)"` ;

@@ -610,13 +610,17 @@ class Decodeur:
         if p.tronque:
             self.tronques += 1
         t = p.transfert
+        # Option recoller : tout paquet de cet appareil qui n'est pas la suite
+        # de la phase de données en cours (soumission IN, morceau IN sans
+        # erreur) la termine ; ses morceaux s'écrivent alors avant lui, dans
+        # l'ordre des trames. Depuis 6i (relecture) : une ligne ERREUR passait
+        # jusque-là avant les données recollées qui la précédaient.
+        sortie = [] if self.suite_de_donnees(p) else self.vider(p.adresse)
         if p.statut != 0 and p.retour:
             self.stats["erreurs"] += 1
-            sortie = [self.ligne(p, "ERREUR",
-                                 f"ep=0x{p.endpoint:02X} {NOMS_TRANSFERT.get(t, t)} "
-                                 f"USBD_STATUS_{nom_statut(p.statut)}")]
-        else:
-            sortie = []
+            sortie.append(self.ligne(p, "ERREUR",
+                                     f"ep=0x{p.endpoint:02X} {NOMS_TRANSFERT.get(t, t)} "
+                                     f"USBD_STATUS_{nom_statut(p.statut)}"))
         if t == TRANSFERT_CONTROLE:
             return sortie + self.controle(p)
         if t == TRANSFERT_BULK:
@@ -717,6 +721,16 @@ class Decodeur:
                 return []
             return self.donnees_in(p, d, p.longueur_donnees, p.tronque)
         return []
+
+    def suite_de_donnees(self, p):
+        """Vrai si ce paquet prolonge la phase de données entrante en cours :
+        soumission d'une lecture bulk, ou morceau reçu sans erreur qui n'est pas
+        un CSW."""
+        if p.transfert != TRANSFERT_BULK or not p.endpoint & 0x80 or p.statut != 0:
+            return False
+        if not p.retour:
+            return True
+        return not (len(p.donnees) == CSW.size and p.donnees[:4] == b"USBS")
 
     def vider(self, adresse):
         """Lignes de la phase de données entrante recollée en attente pour cette
@@ -833,6 +847,22 @@ def main():
 
     dec = Decodeur(args.octets, set(args.masquer), args.serie, args.recoller)
     par_adresse = Counter()
+    # Plage --de/--a, appliquée à la trame de chaque ligne et non à celle du
+    # paquet qui la fait écrire : avec --recoller, la ligne DATA-IN d'une
+    # phase porte la trame de son premier morceau, mais ne s'écrit qu'à la fin
+    # de la phase. Une ligne de suite (SUITE) suit celle qui la précède.
+    # Depuis 6i (relecture) : les morceaux écrits en fin de capture
+    # ignoraient la plage.
+    trame_ligne = 0
+
+    def ecrire(lignes):
+        nonlocal trame_ligne
+        for l in lignes:
+            if not l.startswith(SUITE):
+                trame_ligne = int(l.split(None, 1)[0])
+            if trame_ligne >= args.de and (args.a is None or trame_ligne <= args.a):
+                print(l)
+
     print(f"# capture {args.capture}, adresse(s) {sorted(adresses)}")
     if not args.resume and not args.brut:
         print(f"{'# trame':<8} {'temps (s)':>12}  {'adr':>3}  {'événement':<10} détail")
@@ -848,14 +878,13 @@ def main():
                 print(decrire_brut(p))
             continue
         lignes = dec.traiter(p)
-        if not args.resume and trame.numero >= args.de and (args.a is None or trame.numero <= args.a):
-            for l in lignes:
-                print(l)
+        if not args.resume:
+            ecrire(lignes)
     # Morceaux restés en attente (capture arrêtée avant le CSW) : écrits quand même.
     for adr in list(dec.attente):
-        for l in dec.vider(adr):
-            if not args.resume:
-                print(l)
+        lignes = dec.vider(adr)
+        if not args.resume:
+            ecrire(lignes)
 
     if args.resume:
         print(f"# trames par adresse : {dict(sorted(par_adresse.items()))}")

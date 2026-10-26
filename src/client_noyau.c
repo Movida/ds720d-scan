@@ -31,11 +31,23 @@
 #include <string.h>
 
 #include "bot.h"
+#include "client_noyau.h"
 #include "peripherique.h"
 #include "trace.h"
 #include "../noyau/ds720d_ioctl.h"
 
 static HANDLE pilote = INVALID_HANDLE_VALUE;
+/* Chemin de l'interface ouverte, gardé pour periph_seconde_ouverture. */
+static wchar_t *chemin;
+
+/* Ouvre l'interface du pilote. Lecture et écriture : les IOCTL du pilote les
+ * exigent (FILE_READ_DATA | FILE_WRITE_DATA). Le partage (0) ne compte pas :
+ * le gestionnaire d'E/S ne l'applique qu'aux fichiers ; c'est le pilote qui
+ * n'accepte qu'un client à la fois (Ds720dOuverture, noyau/ds720d.c). */
+static HANDLE ouvrir(const wchar_t *p)
+{
+    return CreateFileW(p, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+}
 
 int periph_ouvrir(void)
 {
@@ -61,14 +73,17 @@ int periph_ouvrir(void)
             break;
         detail->cbSize = sizeof *detail;
         if (SetupDiGetDeviceInterfaceDetailW(liste, &itf, detail, taille, NULL, NULL)) {
-            /* Lecture et écriture : les IOCTL du pilote les exigent (FILE_READ_DATA
-             * | FILE_WRITE_DATA). Pas de partage : le pilote n'accepte de toute
-             * façon qu'un client à la fois (WdfDeviceInitSetExclusive). */
-            pilote = CreateFileW(detail->DevicePath, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING,
-                                 FILE_ATTRIBUTE_NORMAL, NULL);
-            if (pilote == INVALID_HANDLE_VALUE)
-                fprintf(stderr, "CreateFile a échoué (Win32=%lu)%s\n", GetLastError(),
-                        GetLastError() == ERROR_ACCESS_DENIED ? " : déjà ouvert par un autre programme ?" : "");
+            pilote = ouvrir(detail->DevicePath);
+            if (pilote == INVALID_HANDLE_VALUE) {
+                DWORD e = GetLastError();
+                fprintf(stderr, "CreateFile a échoué (Win32=%lu)%s\n", e,
+                        e == ERROR_SHARING_VIOLATION ? " : le scanner est déjà ouvert par un autre programme "
+                                                       "(le pilote n'accepte qu'un client à la fois)"
+                        : e == ERROR_ACCESS_DENIED ? " : droits refusés (descripteur de sécurité posé par l'INF)"
+                                                   : "");
+            } else {
+                chemin = _wcsdup(detail->DevicePath);
+            }
         }
         free(detail);
     }
@@ -95,6 +110,19 @@ void periph_fermer(void)
         CloseHandle(pilote);
         pilote = INVALID_HANDLE_VALUE;
     }
+    free(chemin);
+    chemin = NULL;
+}
+
+unsigned long periph_seconde_ouverture(void)
+{
+    if (pilote == INVALID_HANDLE_VALUE || !chemin)
+        return ERROR_INVALID_HANDLE; /* pas de première ouverture : rien à éprouver */
+    HANDLE h = ouvrir(chemin);
+    if (h == INVALID_HANDLE_VALUE)
+        return GetLastError();
+    CloseHandle(h);
+    return ERROR_SUCCESS;
 }
 
 long periph_controle(const uint8_t setup[8], uint8_t *donnees)

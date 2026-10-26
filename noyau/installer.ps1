@@ -42,8 +42,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if ($env:COMPUTERNAME -ne 'DS720D-NOYAU') {
-    throw "Ce script ne tourne que dans la VM DS720D-NOYAU ; ici : $env:COMPUTERNAME. Rien n'a été fait."
+# Le nom lu par l'API Windows (GetComputerName), pas la variable
+# d'environnement COMPUTERNAME, qu'un « $env:COMPUTERNAME = … » dans la même
+# console suffirait à changer (relecture 6i).
+$machine = [Environment]::MachineName
+if ($machine -ne 'DS720D-NOYAU') {
+    throw "Ce script ne tourne que dans la VM DS720D-NOYAU ; ici : $machine. Rien n'a été fait."
 }
 
 $ID_SCANNER = 'USB\VID_04F9&PID_60E2'
@@ -64,12 +68,20 @@ function Exiger-Admin {
 # (ERROR_SUCCESS_REBOOT_REQUIRED) ; tout autre code est un échec.
 # pnputil affiche l'identifiant d'instance des appareils qu'il supprime,
 # désactive ou réactive, numéro de série compris (constaté au premier essai,
-# 25/10) : sa sortie passe par un filtre qui remplace tout ce qui suit
-# l'identifiant matériel du scanner. $LASTEXITCODE reste celui de pnputil.
+# 25/10) : sa sortie passe par un filtre qui remplace la fin de tout
+# identifiant d'instance USB ou USBSTOR (le numéro de série y est le
+# troisième élément : USB\VID_…&PID_…\<série>, USBSTOR\Disk&Ven_…\<série>&0).
+# Depuis 6i (relecture), la sortie d'erreur passe aussi par le filtre
+# (2>&1) : un message d'échec peut citer l'appareil. Dans Windows
+# PowerShell 5.1, chaque ligne d'erreur d'un programme redirigée ainsi devient
+# une erreur PowerShell, qui arrêterait le script sous « Stop » : la
+# préférence est donc « Continue » le temps de l'appel, dans cette fonction
+# seulement ; l'échec se lit dans $LASTEXITCODE, qui reste celui de pnputil.
 function Pnputil([string[]]$arguments) {
     Write-Host "> pnputil $($arguments -join ' ')"
-    & pnputil.exe @arguments | ForEach-Object {
-        Write-Host ($_ -replace '(USB\\VID_04F9&PID_60E2\\)\S+', '$1(numéro de série masqué)')
+    $ErrorActionPreference = 'Continue'
+    & pnputil.exe @arguments 2>&1 | ForEach-Object {
+        Write-Host ("$_" -replace '((?:USB|USBSTOR)\\[^\\\s]+\\)\S+', '$1(numéro de série masqué)')
     }
     if ($LASTEXITCODE -eq 3010) { Write-Host 'Windows demande un redémarrage pour finir.' }
     elseif ($LASTEXITCODE -ne 0) { throw "pnputil $($arguments[0]) a échoué ($LASTEXITCODE)" }
@@ -97,7 +109,7 @@ function Paquets-Publies {
 
 switch ($Action) {
     'etat' {
-        Write-Host "Machine : $env:COMPUTERNAME"
+        Write-Host "Machine : $machine"
         Montrer-Scanner
         foreach ($magasin in 'Root', 'TrustedPublisher') {
             $ok = Test-Path "Cert:\LocalMachine\$magasin\$EMPREINTE"
@@ -177,15 +189,36 @@ switch ($Action) {
         # par-dessus l'ancienne. À la redétection, Windows préfère le paquet à
         # la version la plus haute (DriverVer de l'INF, à monter à chaque
         # version) ; l'ancien, devenu inutile, est ensuite retiré du magasin.
+        #
+        # Depuis 6i (relecture) : on attend que le scanner tourne bien sur le
+        # nouveau paquet avant de retirer quoi que ce soit. Jusqu'en 6h, le
+        # script relevait le paquet en service après 3 s fixes ; si Windows
+        # n'avait pas fini la redétection, il pouvait lire l'ancien et retirer
+        # le nouveau. Le nouveau se reconnaît à sa version, lue dans l'INF.
         Exiger-Admin
         if (-not (Scanner)) { throw 'scanner absent : le connecter à la VM (menu de VMware) avant' }
+        $version = if ((Get-Content -LiteralPath $paquetInf -Raw) -match '(?m)^DriverVer\s*=\s*[^,]+,\s*([0-9.]+)') { $Matches[1] }
+        if (-not $version) { throw "DriverVer introuvable dans $paquetInf" }
         Pnputil @('/add-driver', $paquetInf)
+        $nouveau = @(Paquets-Publies | Where-Object { $_.Version -eq $version })
+        if ($nouveau.Count -ne 1) { throw "paquet $version : $($nouveau.Count) exemplaire(s) dans le magasin au lieu d'un ; rien d'autre n'est fait" }
+        $nouveau = $nouveau[0].Driver
+        Write-Host "nouveau paquet : $nouveau (version $version)"
         Pnputil @('/remove-device', '/deviceid', $ID_SCANNER)
         Pnputil @('/scan-devices')
-        Start-Sleep -Seconds 3
-        $enService = (Scanner | Get-PnpDeviceProperty DEVPKEY_Device_DriverInfPath).Data
+        # Jusqu'à 30 s, relevé chaque seconde : la redétection est asynchrone.
+        $enService = $null
+        for ($i = 0; $i -lt 30 -and $enService -ne $nouveau; $i++) {
+            Start-Sleep -Seconds 1
+            $s = Scanner
+            $enService = if ($s) { ($s | Get-PnpDeviceProperty DEVPKEY_Device_DriverInfPath).Data }
+        }
+        if ($enService -ne $nouveau) {
+            Montrer-Scanner
+            throw "le scanner n'a pas pris $nouveau (en service : « $enService ») ; aucun paquet n'a été retiré du magasin"
+        }
         foreach ($p in Paquets-Publies) {
-            if ($p.Driver -ne $enService) {
+            if ($p.Driver -ne $nouveau) {
                 Write-Host "ancien paquet $($p.Driver) (version $($p.Version)) retiré du magasin"
                 Pnputil @('/delete-driver', $p.Driver)
             }

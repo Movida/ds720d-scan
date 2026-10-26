@@ -104,7 +104,7 @@ out\ds720d.exe: out\ds720d.obj out\bot.obj out\tunnel.obj out\permis.obj out\per
 # scanner par notre pilote noyau (client_noyau.c, deux IOCTL) au lieu de
 # WinUSB (peripherique.c) et du Bulk-Only en espace utilisateur (bot.c).
 # setupapi.lib : recherche de l'interface du pilote.
-out\client_noyau.obj: src\client_noyau.c src\bot.h src\peripherique.h src\trace.h noyau\ds720d_ioctl.h
+out\client_noyau.obj: src\client_noyau.c src\client_noyau.h src\bot.h src\peripherique.h src\trace.h noyau\ds720d_ioctl.h
 	@if not exist out mkdir out
 	cl $(CFLAGS) /c /Fo$@ src\client_noyau.c
 
@@ -112,8 +112,9 @@ out\ds720dk.exe: out\ds720d.obj out\tunnel.obj out\permis.obj out\client_noyau.o
 	link $(LDFLAGS) /OUT:$@ out\ds720d.obj out\tunnel.obj out\permis.obj out\client_noyau.obj out\trace.obj setupapi.lib
 
 # Essai de la barrière sur le vrai pilote (6e), dans la VM : deux requêtes
-# inoffensives absentes de la liste, qui doivent être refusées.
-out\essai_refus.obj: src\essai_refus.c src\bot.h src\peripherique.h src\trace.h
+# inoffensives absentes de la liste, qui doivent être refusées, et (6i) une
+# seconde ouverture du scanner, refusée elle aussi.
+out\essai_refus.obj: src\essai_refus.c src\client_noyau.h src\bot.h src\peripherique.h src\trace.h
 	@if not exist out mkdir out
 	cl $(CFLAGS) /c /Fo$@ src\essai_refus.c
 

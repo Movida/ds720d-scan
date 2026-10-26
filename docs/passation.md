@@ -1,4 +1,4 @@
-# Passation (mise à jour le 25/10/2026, début de l'étape 6)
+# Passation (mise à jour le 26/10/2026, fin de l'étape 6)
 
 Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un pilote KMDF (voir [HISTORIQUE.md](../HISTORIQUE.md)). Les règles sont dans [CLAUDE.md](../CLAUDE.md).
 
@@ -23,8 +23,8 @@ Repris du projet Claude « Personnel » le 24/10, réorienté le 25/10 vers un p
 | Client TWAIN de banc | `banc/twain_banc.py`, fait scanner le pilote Brother sans Capture Tool ; côté référence seulement |
 | Chaîne C | Build Tools Visual Studio 2022 (17.14), compilateur C x64 et Windows SDK 10.0.26100 ; `construire.cmd` les trouve par vswhere. WDK 10.0.26100.6584 (KMDF 1.15) depuis 5b : `construire.cmd noyau` construit les pilotes de `noyau/` ([noyau.md](noyau.md)) |
 | Pilote du scanner | Sur Medabot : **WinUSB** depuis l'étape 2 (classe USBDevice, nom « DS-720D »), posé par `out\bascule_winusb.exe --oui` ; F: et le logiciel Brother ne le voient plus. Retour à USBSTOR : [winusb.md](winusb.md). Dans la VM : **`ds720d`**, notre pilote, depuis 6b (`noyau\installer.ps1`, retour à WinUSB par son action `retour`) |
-| Programmes | `out\ds720d.exe` (`descripteurs`, `lun`, `inquiry`, `etat`, `papier`, `scan --sortie FICHIER.brut [--recto-verso | --ppp 600] [--feuilles N]`) ; `out\ds720dk.exe`, les mêmes commandes par notre pilote noyau, dans la VM (depuis 6e) ; `out\convertir.exe` (brut vers PGM ou PNG, page rendue comme par le pilote Brother ou `--brut`) |
-| Banc noyau (étape 5) | VMware Workstation Pro 26.0.1 ; VM `ds720d-noyau` dans `D:\VM` (Windows 11 Entreprise Évaluation 26300, Secure Boot coupé, test-signing, KDNET vers WinDbg 1.2610 sur Medabot, port 50000) ; scripts `banc/vm/` (`creer_vm.ps1`, `iso_unattend.py`, `autounattend.xml`, `invite.ps1`) ; signature de test par `noyau/signer.ps1`. Instantané de départ de l'étape 6 : `test-signing-pret`. Détail et retour arrière : [noyau.md](noyau.md) |
+| Programmes | `out\ds720d.exe` (`descripteurs`, `lun`, `inquiry`, `etat`, `papier`, `scan --sortie FICHIER.brut [--recto-verso | --ppp 600] [--feuilles N] [--attendre]`, `--attendre` depuis 6i : la première feuille est guettée) ; `out\ds720dk.exe`, les mêmes commandes par notre pilote noyau, dans la VM (depuis 6e) ; `out\essai_refus.exe`, refus du pilote vérifiés dans la VM ; `out\convertir.exe` (brut vers PGM ou PNG, page rendue comme par le pilote Brother ou `--brut`) |
+| Banc noyau (étape 5) | VMware Workstation Pro 26.0.1 ; VM `ds720d-noyau` dans `D:\VM` (Windows 11 Entreprise Évaluation 26300, Secure Boot coupé, test-signing, KDNET vers WinDbg 1.2610 sur Medabot, port 50000) ; scripts `banc/vm/` (`creer_vm.ps1`, `iso_unattend.py`, `autounattend.xml`, `invite.ps1`) ; signature de test par `noyau/signer.ps1`. Instantané de départ de l'étape 6 : `test-signing-pret` ; dernier pris : `avant-6i`. Dans la VM, le scanner est sous `ds720d` 6.6, Driver Verifier et vérificateur KMDF actifs. Détail et retour arrière : [noyau.md](noyau.md) |
 | Câble | Faux contacts possibles pendant un scan (25/10, capture `3e-scan`) : le scanner quitte le bus. Vérifier le câble avant de soupçonner le code |
 
 ## Voie retenue
@@ -78,7 +78,7 @@ Cadre légal : l'art. L122-6-1 IV du CPI autorise l'étude d'un logiciel pour l'
    - 5e. Débogage noyau KDNET depuis WinDbg sur Medabot (bcdedit dans la VM, règle de pare-feu UDP 50000).
    - 5f. Test-signing dans la VM ; `noyau/bonjour.c`, pilote KMDF non-PnP fait main, construit par nmake, signé, chargé et déchargé, messages lus dans WinDbg.
    - 5g. Relecture de fond : ISO corrigée, risques du faux disque dans la VM et modifications de Medabot consignés.
-6. Pilote KMDF du scanner (en cours ; « go » et accords écrits de David du 25/10), plan et choix dans [pilote.md](pilote.md) : le pilote fait le transport Bulk-Only en URB faits main et tient la barrière des commandes observées, l'outil `ds720dk.exe` garde le protocole du scanner :
+6. ✓ Pilote KMDF du scanner (25-26/10 ; « go » et accords écrits de David du 25/10), plan, choix et journal dans [pilote.md](pilote.md) : le pilote fait le transport Bulk-Only en URB faits main et tient la barrière des commandes observées, l'outil `ds720dk.exe` garde le protocole du scanner :
    - 6a. Plan et docs du pilote.
    - 6b. Squelette PnP, INF, catalogue, installation dans la VM, retour à WinUSB.
    - 6c. Traces WPP et enregistreur IFR.
@@ -87,7 +87,8 @@ Cadre légal : l'art. L122-6-1 IV du CPI autorise l'étude d'un logiciel pour l'
    - 6f. Tunnel 0xC5 par le pilote.
    - 6g. Scan par le pilote (recto, recto-verso, 600 dpi).
    - 6h. Robustesse : Ctrl+C, débranchement, désactivation, arrêt brutal de l'outil.
-   - 6i. Relecture de fond.
+   - 6i. Relecture de fond : un seul client compté par le pilote, installation qui attend la nouvelle version, masquage de `pnputil` élargi, essais complétés ; `scan --attendre`.
+   Restent ouverts : requête de l'outil non annulable, désactivation pendant une requête en vol jamais éprouvée ; désactivation impossible tant que l'outil tient le scanner (pour l'outil final).
 7. Outil final et retrait du logiciel Brother (feu vert de David).
 
 Accès au PC : session Remote Control sur « Medabot (claude-chrome) », dépôt dans `C:\Users\morva\claude-chrome\ds720d-scan`.

@@ -28,6 +28,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
+# Noms neufs seulement, vérifiés avant d'écrire quoi que ce soit (depuis 6i :
+# le compte rendu était ouvert avant ce contrôle, et écrasé en cas de refus).
+foreach ($f in "$Nom.brut", "$Nom.txt", "$Nom-sortie.txt", "$Nom-erreurs.txt", "$Nom-rapport.txt") {
+    if (Test-Path -LiteralPath $f) { throw "$f existe déjà : choisir un autre nom" }
+}
 # Le Ctrl+C touche toute la console, dont le PowerShell qui a lancé ce script
 # (celui de invite.ps1 ps), qui s'arrête alors sans rendre sa sortie : le
 # compte rendu est donc aussi écrit dans NOM-rapport.txt (constaté le 25/10).
@@ -39,9 +44,6 @@ public static extern bool GenerateConsoleCtrlEvent(uint evenement, uint groupe);
 public static extern bool SetConsoleCtrlHandler(System.IntPtr gestionnaire, bool ajouter);
 '@
 
-foreach ($f in "$Nom.brut", "$Nom.txt") {
-    if (Test-Path -LiteralPath $f) { throw "$f existe déjà : choisir un autre nom" }
-}
 $p = Start-Process -FilePath .\ds720dk.exe -ArgumentList 'scan', '--sortie', "$PSScriptRoot\$Nom.brut", '--trace', "$Nom.txt" `
     -NoNewWindow -PassThru -RedirectStandardOutput "$Nom-sortie.txt" -RedirectStandardError "$Nom-erreurs.txt"
 
@@ -49,11 +51,23 @@ $p = Start-Process -FilePath .\ds720dk.exe -ArgumentList 'scan', '--sortie', "$P
 # sortie standard, où l'outil écrit aussi sa trace : le fichier de trace, lui,
 # est ouvert par l'outil sans partage en lecture (premier essai du 25/10).
 $debut = Get-Date
+$bloc = $false
 while (-not $p.HasExited -and ((Get-Date) - $debut).TotalSeconds -lt 60) {
     Start-Sleep -Milliseconds 200
-    if (Select-String -LiteralPath "$Nom-sortie.txt" -Pattern 'lecture 0xC3' -Quiet -ErrorAction SilentlyContinue) { break }
+    if (Select-String -LiteralPath "$Nom-sortie.txt" -Pattern 'lecture 0xC3' -Quiet -ErrorAction SilentlyContinue) { $bloc = $true; break }
 }
 if ($p.HasExited) { "l'outil s'est arrêté avant le premier bloc (code $($p.ExitCode))"; Get-Content "$Nom-erreurs.txt"; Stop-Transcript | Out-Null; exit 1 }
+# Pas de bloc en 60 s (pas de feuille ?) : pas de Ctrl+C, qui n'éprouverait
+# rien de ce qu'on cherche (depuis 6i : il partait quand même). L'outil finit
+# seul, avec son propre délai d'attente de la feuille.
+if (-not $bloc) {
+    "aucun bloc lu en 60 s : pas de Ctrl+C envoyé, attente de la fin de l'outil"
+    $p.WaitForExit()
+    "outil terminé, code $($p.ExitCode)"
+    Get-Content "$Nom-erreurs.txt"
+    Stop-Transcript | Out-Null
+    exit 1
+}
 Start-Sleep -Seconds $Secondes
 
 [void][Ds720d.Console]::SetConsoleCtrlHandler([IntPtr]::Zero, $true)

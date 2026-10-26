@@ -169,6 +169,7 @@ PUSB_INTERFACE_DESCRIPTOR UsbChercherInterface(PUSB_CONFIGURATION_DESCRIPTOR con
     const UCHAR *d = (const UCHAR *)conf;
     PUSB_INTERFACE_DESCRIPTOR trouvee = NULL;
     BOOLEAN entrant = FALSE, sortant = FALSE;
+    ULONG endpoints = 0;
 
     PAGED_CODE();
     /* Même parcours que lire_descripteurs de src/ds720d.c : chaque descripteur
@@ -181,8 +182,10 @@ PUSB_INTERFACE_DESCRIPTOR UsbChercherInterface(PUSB_CONFIGURATION_DESCRIPTOR con
                 break; /* interface suivante : celle qu'on a trouvée est complète */
             if (p[5] == classe && p[6] == sous_classe && p[7] == protocole)
                 trouvee = (PUSB_INTERFACE_DESCRIPTOR)p;
-        } else if (trouvee && p[1] == USB_ENDPOINT_DESCRIPTOR_TYPE && p[0] >= sizeof(USB_ENDPOINT_DESCRIPTOR) &&
-                   (p[3] & 3) == USB_ENDPOINT_TYPE_BULK) {
+        } else if (trouvee && p[1] == USB_ENDPOINT_DESCRIPTOR_TYPE && p[0] >= sizeof(USB_ENDPOINT_DESCRIPTOR)) {
+            endpoints++;
+            if ((p[3] & 3) != USB_ENDPOINT_TYPE_BULK)
+                continue;
             if (p[2] & 0x80)
                 entrant = TRUE;
             else
@@ -192,6 +195,16 @@ PUSB_INTERFACE_DESCRIPTOR UsbChercherInterface(PUSB_CONFIGURATION_DESCRIPTOR con
     if (!trouvee || !entrant || !sortant) {
         Trace(TRACE_LEVEL_ERROR, TRACE_USB, "pas d'interface %02X/%02X/%02X avec deux endpoints bulk", classe,
               sous_classe, protocole);
+        return NULL;
+    }
+    /* bNumEndpoints doit compter les descripteurs ENDPOINT qui suivent
+     * (USB 2.0 table 9-12 : 2 pour le DS-720D, 1b trame 19199). Contrôle
+     * ajouté en 6i : USBD_SelectConfigUrbAllocateAndBuild taille l'URB d'après
+     * bNumEndpoints, et la pile apparie ensuite les pipes aux descripteurs ; un
+     * désaccord est un appareil qu'on ne connaît pas. */
+    if (trouvee->bNumEndpoints != endpoints) {
+        Trace(TRACE_LEVEL_ERROR, TRACE_USB, "interface %u : bNumEndpoints %u, %lu descripteurs ENDPOINT",
+              trouvee->bInterfaceNumber, trouvee->bNumEndpoints, endpoints);
         return NULL;
     }
     return trouvee;

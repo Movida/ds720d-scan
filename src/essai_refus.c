@@ -13,7 +13,12 @@
  * Les deux doivent échouer avec ERROR_ACCESS_DENIED, et une capture USBPcap
  * prise pendant l'essai ne doit rien montrer : le pilote refuse avant tout
  * envoi. Lié à client_noyau.c et trace.c, comme ds720dk.exe.
- * Code de sortie : 0 si les deux requêtes sont refusées.
+ *
+ * Depuis 6i (relecture de fond), un troisième refus : une seconde ouverture
+ * du scanner, pendant que la première est tenue, doit échouer avec
+ * ERROR_SHARING_VIOLATION (un seul client à la fois, noyau/ds720d.c). Elle ne
+ * parle pas au scanner : seule l'ouverture est éprouvée.
+ * Code de sortie : 0 si les trois sont refusées.
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -21,6 +26,7 @@
 #include <stdio.h>
 
 #include "bot.h"
+#include "client_noyau.h"
 #include "peripherique.h"
 #include "trace.h"
 
@@ -30,6 +36,7 @@ int main(void)
     static const uint8_t string2[8] = {0x80, 0x06, 0x02, 0x03, 0x09, 0x04, 0xff, 0x00};
     uint8_t tampon[255];
     struct bot_resultat r;
+    unsigned long e;
     int refus = 0;
 
     SetConsoleOutputCP(CP_UTF8);
@@ -48,9 +55,16 @@ int main(void)
     } else {
         printf("GET_DESCRIPTOR STRING 2 : NON refusé (Win32=%lu)\n", GetLastError());
     }
+    e = periph_seconde_ouverture();
+    if (e == ERROR_SHARING_VIOLATION) {
+        printf("seconde ouverture : refusée par le pilote, comme attendu\n");
+        refus++;
+    } else {
+        printf("seconde ouverture : NON refusée comme attendu (Win32=%lu)\n", e);
+    }
 
     periph_fermer();
     trace_fermer();
-    printf("%d refus sur 2\n", refus);
-    return refus == 2 ? 0 : 1;
+    printf("%d refus sur 3\n", refus);
+    return refus == 3 ? 0 : 1;
 }

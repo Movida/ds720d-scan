@@ -17,6 +17,8 @@ typedef struct _DS720D_APPAREIL {
     USB_PIPE entrant, sortant;  /* pipes bulk du transport Bulk-Only */
     UCHAR max_lun;              /* plus haut LUN, rendu par GET_MAX_LUN */
     BOT bot;                    /* transport Bulk-Only (6e) */
+    PVOID titulaire;            /* WDFFILEOBJECT du client qui tient le scanner, NULL si
+                                   personne (6i, Ds720dOuverture dans ds720d.c) */
 } DS720D_APPAREIL;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DS720D_APPAREIL, Ds720dAppareil)
 

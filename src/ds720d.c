@@ -7,7 +7,8 @@
  *   ds720d inquiry [--trace FICHIER]
  *   ds720d etat [--trace FICHIER]
  *   ds720d papier [--trace FICHIER]
- *   ds720d scan --sortie FICHIER.brut [--recto-verso | --ppp 600] [--feuilles N] [--trace FICHIER]
+ *   ds720d scan --sortie FICHIER.brut [--recto-verso | --ppp 600] [--feuilles N] [--attendre]
+ *               [--trace FICHIER]
  *
  * Chaque commande refait les précédentes, dans l'ordre où Windows énumère le
  * scanner (1b) : descripteurs, GET_MAX_LUN, puis INQUIRY ; « etat » y ajoute la
@@ -19,7 +20,8 @@
  * --recto-verso rejoue 1e-gris-300-recto-verso (une face par fichier,
  * FICHIER-recto.brut et FICHIER-verso.brut) et --ppp 600 rejoue
  * 1e-gris-600-recto ; --feuilles N attend et scanne N feuilles d'affilée
- * (FICHIER-p1….brut).
+ * (FICHIER-p1….brut). Depuis l'étape 6i, --attendre attend aussi la première
+ * feuille, au lieu de s'arrêter si le chargeur est vide (attendre_feuille).
  * Pourquoi enchaîner plutôt qu'isoler chaque requête : GET_MAX_LUN a besoin du
  * numéro d'interface lu dans les descripteurs, et la trace se compare alors d'un
  * bloc à la référence.
@@ -290,9 +292,10 @@ static const uint8_t depot_a0[10] = {0x28, 0x00, 0xa0, 0x00, 0x0a, 0x0d, 0x00, 0
  * est relue avant chacune des cinq premières commandes, pas avant la sixième :
  * on le reproduit tel quel (trames 772, 937, 1096, 1258, 1418).
  *
- * Sans feuille, le pilote TWAIN attend qu'on en glisse une (1e-sans-papier) ;
- * nous, on s'arrête après la première réponse 00 00 et on le dit : attendre en
- * sondant le scanner serait une séquence qu'aucune capture ne montre.
+ * Sans feuille, on s'arrête après la première réponse 00 00 et on le dit,
+ * comme le pilote TWAIN réglé à 1 s d'attente : un seul 0x08, puis « Aucun
+ * document » (1e-sans-papier, trames 1426 à 1460). Pour attendre la première
+ * feuille, l'option --attendre (6i) passe d'abord par attendre_feuille.
  *
  * debut : 0 en temps normal ; 1 après attendre_feuille, dont le dernier 0x08,
  * celui qui a rendu 01 00, tient lieu du premier : entre deux feuilles, le pilote
@@ -528,13 +531,27 @@ static long long scanner_feuille(FILE *faces[2], const struct mode_scan *m, int 
  * signature puis le dépôt 0x08 (trames 148250 et 148287), jusqu'à la réponse
  * 01 00 (feuille engagée). Le pilote y a attendu 28 s ; on abandonne après
  * ATTENTE_FEUILLE_S. Renvoie 1 si une feuille est arrivée, 0 sinon (ou sur
- * Ctrl+C), -1 en cas d'erreur. */
+ * Ctrl+C), -1 en cas d'erreur.
+ *
+ * Depuis 6i, aussi avant la première feuille (option --attendre, idée de
+ * David : il n'a plus qu'à glisser la feuille). Aucune capture ne montre le
+ * pilote TWAIN attendre la première feuille : réglé à 1 s, il renonce après
+ * un seul 0x08 (1e-sans-papier). On reprend donc l'attente entre deux
+ * feuilles, telle quelle, suivie de la même suite (lire_papier(1)) : la
+ * séquence vue par le scanner est celle des trames 122627 à 149859, mêmes
+ * commandes, mêmes octets, même ordre. Seul change ce qui précède : la prise
+ * de contact (lire_etat) au lieu du RELEASE UNIT de la feuille précédente ;
+ * dans les deux cas, aucune unité n'est réservée. La première feuille a plus
+ * de temps (ATTENTE_PREMIERE_S) : l'outil peut être lancé à distance, avant
+ * qu'on soit devant le scanner (banc de la VM). */
 #define ATTENTE_FEUILLE_S 60
-static int attendre_feuille(void)
+#define ATTENTE_PREMIERE_S 300
+static int attendre_feuille(int feuille)
 {
-    printf("glissez la feuille suivante (%d s au plus)\n", ATTENTE_FEUILLE_S);
+    int attente = feuille > 1 ? ATTENTE_FEUILLE_S : ATTENTE_PREMIERE_S;
+    printf("glissez la %s feuille (%d s au plus)\n", feuille > 1 ? "suivante" : "première", attente);
     fflush(stdout);
-    for (int s = 0; s < ATTENTE_FEUILLE_S && !interrompu; s++) {
+    for (int s = 0; s < attente && !interrompu; s++) {
         uint8_t d[2];
         Sleep(1000); /* intervalle du pilote : 1,0 s entre les trames 122627, 123538 et 124457 */
         if (tunnel_signature() != 0 || tunnel_commande(depot_papier, sizeof depot_papier, d, sizeof d) != 0)
@@ -587,19 +604,24 @@ static FILE *creer_face(const char *sortie, int feuille, int feuilles, int recto
 /* Scan de une à plusieurs feuilles dans le mode choisi. Entre deux feuilles, on
  * attend la suivante comme le pilote TWAIN, puis la séquence repart : présence
  * du papier, réglages, RESERVE, SCAN… (1e-gris-300-recto-verso, trames 148287 à
- * 149859 : la suite de la première feuille, le premier 0x08 en moins). */
-static int scanner_feuilles(const char *sortie, const struct mode_scan *m, int feuilles)
+ * 149859 : la suite de la première feuille, le premier 0x08 en moins). Avec
+ * attendre (option --attendre), la première feuille est attendue de même. */
+static int scanner_feuilles(const char *sortie, const struct mode_scan *m, int feuilles, int attendre)
 {
-    trace_note("scan : %s, %d feuille(s)", m->nom, feuilles);
+    trace_note("scan : %s, %d feuille(s)%s", m->nom, feuilles, attendre ? ", première feuille attendue" : "");
     SetConsoleCtrlHandler(sur_ctrl_c, TRUE);
     int r = 0;
     for (int feuille = 1; feuille <= feuilles && r == 0; feuille++) {
-        if (feuille > 1) {
-            int arrivee = attendre_feuille();
-            if (arrivee == 0)
+        int attente = feuille > 1 || attendre;
+        if (attente) {
+            int arrivee = attendre_feuille(feuille);
+            if (arrivee == 0 && feuille > 1)
                 fprintf(stderr, "pas de feuille %d : arrêt après %d feuille(s)\n", feuille, feuille - 1);
+            else if (arrivee == 0)
+                fprintf(stderr, "aucune feuille glissée : rien n'a été scanné\n");
             if (arrivee <= 0) {
-                r = arrivee == 0 ? 0 : -1;
+                /* Pas de première feuille : un échec, comme sans --attendre. */
+                r = arrivee == 0 && feuille > 1 ? 0 : -1;
                 break;
             }
         }
@@ -609,7 +631,7 @@ static int scanner_feuilles(const char *sortie, const struct mode_scan *m, int f
         int nfaces = m->recto_verso ? 2 : 1, ok = 1;
         for (int i = 0; i < nfaces && ok; i++)
             ok = (faces[i] = creer_face(sortie, feuille, feuilles, m->recto_verso, i, noms[i], MAX_PATH)) != NULL;
-        long long total = ok ? scanner_feuille(faces, m, feuille > 1) : -1;
+        long long total = ok ? scanner_feuille(faces, m, attente) : -1;
         for (int i = 0; i < nfaces; i++) {
             if (!faces[i])
                 continue;
@@ -641,13 +663,13 @@ static void usage(void)
 {
     fprintf(stderr, "usage : ds720d descripteurs|lun|inquiry|etat|papier [--trace FICHIER]\n"
                     "        ds720d scan --sortie FICHIER.brut [--recto-verso | --ppp 600] [--feuilles N]\n"
-                    "                    [--trace FICHIER]\n");
+                    "                    [--attendre] [--trace FICHIER]\n");
 }
 
 int main(int argc, char **argv)
 {
     const char *commande = NULL, *chemin_trace = NULL, *sortie = NULL;
-    int recto_verso = 0, ppp = 300, feuilles = 1;
+    int recto_verso = 0, ppp = 300, feuilles = 1, attendre = 0;
     SetConsoleOutputCP(CP_UTF8); /* la trace est en UTF-8 */
 
     for (int i = 1; i < argc; i++) {
@@ -661,6 +683,8 @@ int main(int argc, char **argv)
             ppp = atoi(argv[++i]);
         else if (strcmp(argv[i], "--feuilles") == 0 && i + 1 < argc)
             feuilles = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--attendre") == 0)
+            attendre = 1;
         else if (!commande)
             commande = argv[i];
         else {
@@ -685,7 +709,7 @@ int main(int argc, char **argv)
         niveau = 6;
     /* Recto-verso à 600 dpi : aucune capture, donc refusé (voir mode_scan). */
     if ((ppp != 300 && ppp != 600) || (recto_verso && ppp == 600) || feuilles < 1 || feuilles > 50 ||
-        (niveau != 6 && (recto_verso || ppp != 300 || feuilles != 1)))
+        (niveau != 6 && (recto_verso || ppp != 300 || feuilles != 1 || attendre)))
         niveau = 0;
     /* Le plus long nom de face, « -p50-verso.brut » ajouté, doit tenir dans
      * MAX_PATH : on le vérifie ici, avant de parler au scanner (creer_face). */
@@ -717,7 +741,7 @@ int main(int argc, char **argv)
     if (r == 0 && niveau >= 4)
         r = lire_etat();
     if (r == 0 && niveau == 6)
-        r = scanner_feuilles(sortie, mode, feuilles);
+        r = scanner_feuilles(sortie, mode, feuilles, attendre);
     if (r == 0 && niveau == 5) {
         int papier = lire_papier(0);
         if (papier >= 0)
